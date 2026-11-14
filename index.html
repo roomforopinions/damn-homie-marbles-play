@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#160c26">
+<meta name="robots" content="noindex,nofollow">
+<title>Damn Homie Marbles · Osaka GP (prototype v2)</title>
+<link rel="stylesheet" href="./style.css?v=2">
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
+</head>
+<body>
+<div id="view"></div>
+
+<div id="loading" class="screen">
+  <div class="title">DAMN HOMIE<br>MARBLES</div>
+  <p class="sub">Osaka Grand Prix</p>
+  <div class="bar"><div id="barFill"></div></div>
+  <p class="note" id="loadNote">Loading Osaka…</p>
+</div>
+
+<div id="home" class="screen hidden">
+  <div class="title">DAMN HOMIE<br>MARBLES</div>
+  <p class="sub">Osaka Grand Prix · <span id="lapsTxt">3</span> laps · 12 marbles · watch party</p>
+  <div id="players"></div>
+  <div id="pedit">
+    <input id="pname" maxlength="10" placeholder="Name">
+    <div id="pcolors"></div>
+    <button id="pdel" class="mini">Remove</button>
+  </div>
+  <p class="sub2" id="pickHint">Tap a marble for P1</p>
+  <div id="cats"></div>
+  <div id="grid"></div>
+  <button id="startBtn" class="big">Race!</button>
+  <p class="note">Up to 4 players, one marble each. During the race: TV · Blimp · Chase · Front cameras, tap a player chip to follow their marble.</p>
+</div>
+
+<div id="hud" class="hidden">
+  <div id="top"><div id="lap">LAP 1/3</div><div id="clock">0.00</div></div>
+  <div id="tower"><div class="th">OSAKA GP</div><div id="board"></div></div>
+  <div id="lights" class="hidden"><span></span><span></span><span></span><span></span><span></span></div>
+  <div id="banner" class="hidden"></div>
+  <div id="lower" class="hidden"></div>
+  <div id="follow"></div>
+  <div id="controls">
+    <div id="cams"></div>
+  </div>
+  <button id="muteBtn" class="mini">🔊</button>
+  <div id="fps"></div>
+  <div id="shotTag"></div>
+</div>
+
+<div id="rp" class="hidden">
+  <div id="rpBadge"><span class="dot"></span>REPLAY</div>
+  <div id="rpSpeed"></div>
+  <div id="rpCap"></div>
+  <div id="photo" class="hidden"><div class="pline"></div><div class="ptitle">PHOTO FINISH</div><div class="pmargin" id="pmargin"></div></div>
+  <div id="winTitle" class="hidden"></div>
+  <button id="skipBtn" class="mid">Skip ⏭</button>
+</div>
+<div id="wipe"><span>DAMN HOMIE</span></div>
+<div id="flash"></div>
+
+<div id="results" class="screen hidden">
+  <h1 id="resTitle">Results</h1>
+  <div id="resList" class="list"></div>
+  <div class="row-btns"><button id="againBtn" class="big">Race again</button><button id="replayBtn" class="mid">⟲ Replay</button><button id="pickBtn" class="mid">Players</button></div>
+</div>
+
+<noscript>This game needs JavaScript.</noscript>
+<script type="module">
+  import('./main.js?v=2').catch((e) => { document.getElementById('loadNote').textContent = 'Could not start: ' + e.message; console.error(e); });
+</script>
+</body>
+</html>
