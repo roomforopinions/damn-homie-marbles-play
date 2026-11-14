@@ -32,7 +32,7 @@ const CATS = ['Sumo', 'Streetwear/DH', 'Gems & Metals', 'Elements', 'Animals', '
 const ROSTER = [
   ['sumo_yokozuna', 'Yokozuna Tsuna', 0], ['sumo_mawashi_kuro', 'Kuro Mawashi', 0], ['sumo_mawashi_murasaki', 'Murasaki Mawashi', 0], // AD T-030b sumo v2
   ['sumo_mini_shiko', 'Mini Rikishi', 0], ['sumo_mawashi_kin', 'Kin Mawashi', 0], ['sumo_gunbai', 'Gunbai', 0],
-  ['sumo_gyoji_kurenai', 'Gyoji Kurenai', 0], ['sumo_gyoji_midori', 'Gyoji Midori', 0], ['sumo_kesho', 'Kesho-mawashi', 0], ['sumo_mini_dohyoiri', 'Mini Yokozuna', 0],
+  ['sumo_gyoji_kurenai', 'Gyoji Kurenai', 0], ['sumo_gyoji_midori', 'Gyoji Midori', 0], ['sumo_kesho', 'Kesho-mawashi', 0], ['sumo_mini_dohyoiri', 'Mini Dohyo-iri', 0],
   ['dh08_blackletter_dh', 'Blackletter', 1], ['dh03_i_heart_dh', 'I♥DH', 1], ['dh01_ski_mask', 'Ski Mask', 1],
   ['dhm_white_on_black', 'DH Mono', 1], ['dhm_black_on_white', 'DH Mono W', 1], ['dh05_gold_bull_skull', 'Bull Skull', 1],
   ['dh13_rugby_stripe', 'Rugby', 1], ['dh04_guard_dog', 'Guard Dog', 1], ['dh10_homie_crest', 'Homie Crest', 1],
@@ -951,10 +951,12 @@ function shotBlimp(dt, now, fk = follow) {
   return { gondola: !!blimp, pos: wp, look: f, fov, kPos: 99, kLook: 2, kFov: 0.8 };
 }
 function shotChase(k) {
+  if (typeof tv6Close === 'function' && TV6.on) return tv6Close(k, 'chase'); // AD TV r6 hook (block at the end)
   const S0 = subject(k), d = new THREE.Vector3(S0.pr.tan.x, 0, S0.pr.tan.z).normalize(); shotName = 'CHASE · ' + S0.m.name.toUpperCase();
   return { pos: S0.p.clone().addScaledVector(d, -7.5).add(new THREE.Vector3(0, 3.6, 0)), look: S0.p.clone().addScaledVector(d, 5).add(new THREE.Vector3(0, 0.2, 0)), fov: 60, kPos: 6, kLook: 9.6 };
 }
 function shotFront(k) {
+  if (typeof tv6Close === 'function' && TV6.on) return tv6Close(k, 'front'); // AD TV r6 hook
   const S0 = subject(k), d = new THREE.Vector3(S0.pr.tan.x, 0, S0.pr.tan.z).normalize(); shotName = 'FRONT · ' + S0.m.name.toUpperCase();
   return { pos: S0.p.clone().addScaledVector(d, 7).add(new THREE.Vector3(0, 1.8, 0)), look: S0.p.clone().addScaledVector(d, -2), fov: 60, kPos: 6, kLook: 9.6 };
 }
@@ -977,6 +979,7 @@ function applyShot(s, dt) {
   $('shotTag').textContent = shotName;
 }
 function liveCamera(dt, now) {
+  if (typeof tv6Watch === 'function') tv6Watch(); // AD TV r6 hook: follow retargets every camera
   const fk = follow >= 0 ? follow : standings()[0].k;
   if (race.phase === 'grid') return applyShot(camMode === 1 ? shotBlimp(dt, now) : shotGrid(), dt);
   const s = camMode === 0 ? shotTV(dt, now) : camMode === 1 ? shotBlimp(dt, now) : camMode === 2 ? shotChase(fk) : shotFront(fk);
@@ -1291,7 +1294,7 @@ function tv5EstToFlag(k) { // seconds until the leader takes the flag (final lap
 // ---- shot builders: each returns { type, name, dur, ... } or null when no clean angle exists ----
 function tv5BuildTracking(sub) { // camera rides a virtual dolly rail beside the deck at pack speed
   const s = marbles[sub.k].pr.s, v = Math.max(10, tv5Speed(sub.k));
-  for (const side of [1, -1]) for (const [off, h] of [[3.2, 2.0], [4.5, 3.2], [2.4, 1.3]]) {
+  for (const side of [1, -1]) for (const [off, h] of (TV6.on ? [[6, 3.8], [8, 5.2], [4.5, 3.0]] : [[3.2, 2.0], [4.5, 3.2], [2.4, 1.3]])) { // AD TV r6: wider, higher
     let ok = true;
     for (let u = 0; u <= 1.001 && ok; u += 0.2) { const f = tv5Frame(s + v * 6.5 * u - 2), pos = f.p.clone().addScaledVector(f.n, side * (f.hw + off)).addScaledVector(tv5Y, h); if (!tv5OK(pos, f.p.clone().addScaledVector(f.t, 2).add(new THREE.Vector3(0, 0.5, 0))) || !tv5ClearOfDeck(pos)) ok = false; }
     if (ok) return { type: 'track', name: 'TV · TRACKING DOLLY', side, off, h, sc: s - 2, dur: 5.5 + Math.random() * 2.5 };
@@ -1300,7 +1303,7 @@ function tv5BuildTracking(sub) { // camera rides a virtual dolly rail beside the
 }
 function tv5BuildRail(sub, sFixed) { // rail-level cam: lens 0.5 u above the deck just outside the rail, pack rushes past
   const v = Math.max(10, tv5Speed(sub.k)), s = sFixed ?? marbles[sub.k].pr.s + v * 2.8;
-  for (const side of [-1, 1]) { const f = tv5Frame(s), pos = f.p.clone().addScaledVector(f.n, side * (f.hw + 0.9)).addScaledVector(tv5Y, 0.55);
+  for (const side of [-1, 1]) { const f = tv5Frame(s), pos = f.p.clone().addScaledVector(f.n, side * (f.hw + (TV6.on ? 3.2 : 0.9))).addScaledVector(tv5Y, TV6.on ? 1.8 : 0.55); /* AD TV r6: off the rail */
     const back = tv5Frame(s - 10).p.add(new THREE.Vector3(0, 0.4, 0)); if (tv5OK(pos, back) && tv5OK(pos, f.p.clone().add(new THREE.Vector3(0, 0.4, 0)))) return { type: 'rail', name: 'TV · RAIL CAM', pos, f, side, dur: 5 + Math.random() * 2 }; }
   return null;
 }
@@ -1327,7 +1330,7 @@ function tv5BuildOrbit(sub) { // slow orbit outside the corkscrew helix, trackin
 }
 function tv5BuildStation(sub) { // long-lens / pan / overhead stations of the v4 rig, with a slow zoom drift
   const n = cutTV(sub, performance.now() / 1000); if (!n) return null;
-  { const sp = marbles[sub.k].mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0)), ah = tv5Frame(marbles[sub.k].pr.s + Math.max(10, tv5Speed(sub.k)) * 1.5).p.add(new THREE.Vector3(0, 0.4, 0)); if (!TV5.relax && (!visibleAll(n.st.pos.clone(), sp) || !visibleAll(n.st.pos.clone(), ah))) return null; } // subject must be in clear sight now and 1.5 s on
+  { const sp = marbles[sub.k].mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0)), ah = tv5Frame(marbles[sub.k].pr.s + Math.max(10, tv5Speed(sub.k)) * 1.5).p.add(new THREE.Vector3(0, 0.4, 0)); if (!TV5.relax && (!visibleAll(n.st.pos.clone(), sp) || !visibleAll(n.st.pos.clone(), ah))) return null; if (TV6.on && !TV5.relax && (n.st.type === 'low' || n.st.type === 'mast')) return null; } /* AD TV r6: rail-level + mast whip pans only as a last resort */ // subject must be in clear sight now and 1.5 s on
   return { type: 'station', name: '', st: n.st, zoom: n.zoom, dur: n.st.type === 'gantry' ? 5.2 : 5.5 + Math.random() * 2.5 };
 }
 const tv5FinCam = (() => { // live finish cam: inside the rail corridor 8 u past the line, 2.4 u up over the outer rail, looking back at the line
@@ -1401,7 +1404,7 @@ function tv5Shot(dt, now, fk = follow) {
     const lost = (sh.type === 'blimp' ? camera.getWorldPosition(new THREE.Vector3()) : camera.position).distanceTo(m.mesh.position) > 75 || (sh.blocked || 0) > 0.8;
     sh.lostT = lost ? (sh.lostT || 0) + dt : 0;
     const atLine = !TV5.finishLocked && race.phase === 'race' && !lead.finished && lead.lap >= LAPS - 1 && LAPS * L - lead.prog < 14 && LAPS * L - lead.prog > 0; // AD TV r3: leader ~1 s from the flag
-    if ((held >= TV_MIN_HOLD && (sh.lostT > 0.6 || lastLap)) || (atLine && held >= 3)) { sh = null; if (atLine) TV5.finishNow = true; } // the one allowed early cut per race: never miss the line
+    if ((held >= TV_MIN_HOLD && (sh.lostT > 0.6 || lastLap)) || (atLine && held >= (TV6.on ? 4 : 3))) { /* AD TV r6: min 4 s before the finish cut */ sh = null; if (atLine) TV5.finishNow = true; } // the one allowed early cut per race: never miss the line
   }
   if (!sh || held >= sh.dur) { if (!TV5.shot || ts - TV5.lastCut >= TV_MIN_HOLD || TV5.finishNow) { TV5.finishNow = false; sh = tv5Cut(fk, ts) || TV5.shot; } else sh = TV5.shot; }
   if (!sh) return null;
@@ -1410,8 +1413,8 @@ function tv5Shot(dt, now, fk = follow) {
   if (sh.type === 'blimp') { /* AD TV r4: high blimp, long lens, gondola-edge reveal */ if (ts - sh.t0 < 0.05) camSnap = true; const r = adBlimpShot(dt, now, sh.k, ts - sh.t0); const pc = pieceAt(m.pr.s); shotName = 'BLIMP \u00b7 AERIAL' + (pc ? ' \u00b7 ' + pc : ''); TV5.snap = true; tv5UI(true); return r; }
   let pos, fov = 45, kp = 3, kl = 4.5;
   if (sh.type === 'track') { const lv = m.body.linvel(), va = lv.x * m.pr.tan.x + lv.y * m.pr.tan.y + lv.z * m.pr.tan.z; sh.sc += Math.max(0, va) * dt + wrap(m.pr.s - 2.2 - sh.sc) * Math.min(1, dt * 1.5); // dolly runs at pack speed + gentle correction (no lag)
-    const f = tv5Frame(sh.sc); pos = f.p.clone().addScaledVector(f.n, sh.side * (f.hw + sh.off)).addScaledVector(tv5Y, sh.h + Math.sin(u * Math.PI) * 0.6); fov = 46 - e * 8; kp = 5; }
-  else if (sh.type === 'rail') { pos = sh.pos.clone().addScaledVector(sh.f.t, e * 1.4); fov = 54 - e * 8; kp = 99; }
+    const f = tv5Frame(sh.sc); pos = f.p.clone().addScaledVector(f.n, sh.side * (f.hw + sh.off)).addScaledVector(tv5Y, sh.h + Math.sin(u * Math.PI) * 0.6); fov = TV6.on ? 38 - e * 5 : 46 - e * 8; kp = 5; } /* AD TV r6: longer lens */
+  else if (sh.type === 'rail') { pos = sh.pos.clone().addScaledVector(sh.f.t, e * 1.4); fov = TV6.on ? 44 - e * 6 : 54 - e * 8; kp = 99; }
   else if (sh.type === 'crane') { pos = sh.a.clone().lerp(sh.b, e); fov = THREE.MathUtils.clamp(420 / (pos.distanceTo(look) + 5), 24, 46); kp = 99; }
   else if (sh.type === 'lift') { pos = sh.pos.clone().add(new THREE.Vector3(0, e * 2.5, 0)); fov = THREE.MathUtils.clamp(520 / (pos.distanceTo(look) + 6), 30, 55); kp = 99; kl = 3.2; }
   else if (sh.type === 'orbit') { const a = sh.a0 + sh.dir * e * 1.3; const y = THREE.MathUtils.lerp(sh.y, m.mesh.position.y + 3.5, 0.5) - e * 1.5; pos = new THREE.Vector3(helixC.x + Math.cos(a) * sh.r, y, helixC.z + Math.sin(a) * sh.r); fov = THREE.MathUtils.clamp(560 / (pos.distanceTo(look) + 6), 30, 52); kp = 3; }
@@ -1421,7 +1424,7 @@ function tv5Shot(dt, now, fk = follow) {
   // drama FX: smooth shake + FOV punch while the subject drops or slams a bank (sine noise, never per-frame random)
   const vy = m.body.linvel().y; const want = THREE.MathUtils.clamp((-vy - 18) / 50, 0, 1) * (sh.type === 'finish' ? 0.3 : 1);
   TV5.shake += (want - TV5.shake) * Math.min(1, dt * (want > TV5.shake ? 6 : 1.5)); TV5.punch += (want * 7 - TV5.punch) * Math.min(1, dt * (want * 7 > TV5.punch ? 5 : 1.2));
-  const amp = TV5.shake * Math.min(0.18, 0.012 * pos.distanceTo(look)), tt = now * 0.001;
+  const amp = TV5.shake * Math.min(0.18, 0.012 * pos.distanceTo(look)) * (TV6.on ? 0.5 : 1), tt = now * 0.001; // AD TV r6: half shake
   const shk = new THREE.Vector3(Math.sin(tt * 23.1) + 0.5 * Math.sin(tt * 37.7), Math.sin(tt * 19.3 + 1) + 0.5 * Math.sin(tt * 41.3), Math.sin(tt * 29.9 + 2)).multiplyScalar(amp);
   const piece = pieceAt(m.pr.s); shotName = (sh.name || 'TV') + (piece && !/FINISH CAM|FLING|CORKSCREW/.test(sh.name) ? ' · ' + piece : '') + (TV5.slowUntil > now ? ' · SLOW-MO' : '');
   // lead-compensate the look target by the smoothing lag (v / k), so 60 u/s marbles stay in frame on long lenses
@@ -1430,6 +1433,7 @@ function tv5Shot(dt, now, fk = follow) {
   // own smoothing so shake reaches the lens (applyShot gets kPos/kLook 99)
   if (TV5.snap) { TV5.cp.copy(pos); TV5.cl.copy(look); TV5.snap = false; }
   else { TV5.cp.lerp(pos, kp >= 99 ? 1 : 1 - Math.exp(-dt * kp)); TV5.cl.lerp(look, 1 - Math.exp(-dt * kl)); }
+  if (TV6.on && sh.type !== 'finish') { const g = tv6Guard(TV5.cp, m.mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0)), sh); if (g) { TV5.cp.copy(g); } } // AD TV r6: lens never inside / under geometry
   tv5UI(true);
   return { pos: TV5.cp.clone(), look: TV5.cl.clone().add(shk), fov: fov + TV5.punch, kPos: 99, kLook: 99, kFov: sh.type === 'finish' ? 2 : 1.4 };
 }
@@ -1784,14 +1788,16 @@ function adBlimpShot(dt, now, fk = -1, age = null) { AD4.age = age; AD4.ageAt = 
   return { gondola: !!blimp, pos: wp, look: AD4.aim ? AD4.aim.clone() : AD4.tgt.clone(), fov: AD4.fovWant };
 }
 const _ad5M = new THREE.Matrix4(), _ad5Q = new THREE.Quaternion(), _ad5P = new THREE.Quaternion(), _ad5Up = new THREE.Vector3(0, 1, 0);
-function adSoftRetarget() { // subject drifting off-centre: hand the shot to the marble nearest the centre (inside the middle 45%), at most every 1.5 s
+function adSoftRetarget() { if (typeof tv6Lock === 'function' && tv6Lock()) return false; // AD TV r6: a followed marble keeps the shot
+  // subject drifting off-centre: hand the shot to the marble nearest the centre (inside the middle 45%), at most every 1.5 s
   const now = performance.now(); if (now - (AD4.softAt || 0) < 1500) return false; let pick = null, bd = 0.35;
   for (const m of marbles) { if (m.finished || m.k === AD4.subK) continue; const n = m.mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0)).project(camera); const d = Math.max(Math.abs(n.x), Math.abs(n.y)); if (n.z < 1 && d < bd) { bd = d; pick = m; } }
   if (!pick) return false; AD4.softAt = now; AD4.subK = pick.k; AD4.subLast = null; AD4.retargets = (AD4.retargets || 0) + 1;
   const sh = view.mode === 'live' && camMode === 0 && TV5.shot && TV5.shot.type === 'blimp' ? TV5.shot : null;
   if (sh) { sh.k = pick.k; sh.k2 = -1; sh.ltRefresh = true; try { tv5LowerThird(sh); } catch (e) {} finally { sh.ltRefresh = false; } } return true;
 }
-function adRetarget(why) {
+function adRetarget(why) { if (typeof tv6Lock === 'function' && tv6Lock()) return tv6Replan(); // AD TV r6: re-park on the followed marble
+ 
   const live = view.mode === 'live', sh = live && camMode === 0 && TV5.shot && TV5.shot.type === 'blimp' ? TV5.shot : null;
   const st = standings(); let pick = null;
   for (const m of st) { if (m.finished || m.k === AD4.subK) continue; const n = m.mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0)).project(camera); if (n.z < 1 && Math.abs(n.x) < 0.7 && Math.abs(n.y) < 0.7) { pick = m; break; } }
@@ -1887,3 +1893,134 @@ setInterval(() => { // live lower-third: gaps and the lap refresh while it is on
     + 'body #celebPod .top{left:50%;right:auto;transform:translateX(-50%);width:min(760px,90vw);box-sizing:border-box;padding:10px 14px 12px;background:linear-gradient(180deg,rgba(12,7,20,.97),rgba(24,12,36,.95));border-top:4px solid #e0102f;border-bottom:4px solid #e0102f;box-shadow:0 12px 34px rgba(0,0,0,.55),4px 4px 0 #000}'
     + 'body #celebPod .top .ribbon{box-shadow:none}body #celebPod .top .nm{text-shadow:0 0 12px rgba(255,179,0,.5),3px 3px 0 #000}body #celebPod .top .clist span{background:rgba(255,255,255,.08)}';
   document.head.appendChild(css); }
+
+// ---------- AD TV r6 (Art Director, 11-14, Jarod after playing on Klaude: "the close cams clip through the map on the conveyor, I'm
+// staring at the bottom of the racetrack", "from everywhere but the blimp they go a million miles a minute", "when I tried to track the
+// second player it only tracked me") ----------
+// (a) Chase / Front are broadcast follow cams now: longer lens, ~13 u off the marble, heading eased (no whip pans at hairpins), the
+//     framing offset rides a critically damped spring RELATIVE to the marble (smooth, no travel lag), the look leads the direction of
+//     travel. On the chain lift both swing to a high side angle outside the lift housing.
+// (b) Collision-aware placement, every frame, on the final lens position: never inside a scenery box, under/inside a deck, within 0.6 u
+//     of a surface, or with scenery/deck/rails/lift housing between lens and marble (raycasts). On a fail: pull in along the sight line,
+//     raise, swing side-high, overhead, then close-in; first clean candidate wins. TV shots get the same guard (inside / near / under-a-deck-
+//     with-no-sight) on their smoothed lens.
+// (c) Follow: player buttons, leaderboard rows and keys 1-4 (players), 0 (race director), [ / ] (prev / next marble by position) now retarget
+//     every camera at once: a TV shot in progress re-cuts, the blimp aerial re-plans onto the marble and no longer hands off to whoever is in
+//     frame while a marble is followed.
+// (d) Readability (TV director): tracking dolly wider and higher with a longer lens, rail cam off the rail, no rail-level / mast stations
+//     unless nothing else is clean, half the drop shake, no early cut before 4 s at the finish window.
+// ?tv6=0 = r5 behaviour. Probe for the harness: __dh.tv6.
+const TV6 = { on: Q.get('tv6') !== '0', last: 0, k: -1, mode: '', off: null, offV: new THREE.Vector3(), lo: null, loV: new THREE.Vector3(), ha: 0, prevP: null, vel: new THREE.Vector3(), liftW: 0, side: 0, follow: undefined, fixes: 0, guards: 0, planAt: 0 };
+const tv6Occ = (() => { const a = occluders.concat(trackOcc); const lb = LIFT ? new THREE.Box3().setFromPoints(Array.from({ length: 24 }, (_, j) => pointAtS(LIFT.s0 - 4 + (LIFT.s1 - LIFT.s0 + 8) * j / 23).p)).expandByScalar(5) : null;
+  if (lb) for (const o of scene.children) if (o.isMesh && /Box|Cylinder/.test(o.geometry?.type || '') && lb.containsPoint(o.position)) a.push(o); // lift housing cheeks + drums (scene-level, not in the glb lists)
+  return a; })();
+const tv6R = new THREE.Raycaster(), tv6Dirs = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]].map((d) => new THREE.Vector3(...d));
+function tv6Under(p) { // lens under (or inside) any deck: a centerline sample within its half-width + 1 u horizontally, from 1 u below to 40 u above the lens
+  for (let j = 0; j < N; j++) { const q = P[j], dy = q.y - p.y; if (dy < -1.0 || dy > 40) continue; const dx = q.x - p.x, dz = q.z - p.z, r = HW[j] + 1.0; if (dx * dx + dz * dz < r * r) return true; }
+  return false;
+}
+function tv6Near(p, r = 0.6) { for (const d of tv6Dirs) { tv6R.set(p, d); tv6R.far = r; if (tv6R.intersectObjects(tv6Occ, false).length) return true; } return false; }
+function tv6Sight(a, b) { const d = b.clone().sub(a), len = d.length(); if (len < 0.8) return true; d.divideScalar(len);
+  tv6R.set(a, d); tv6R.far = len - 0.5; if (tv6R.intersectObjects(tv6Occ, false).length) return false;
+  tv6R.set(b, d.clone().negate()); tv6R.far = len - 0.05; return tv6R.intersectObjects(tv6Occ, false).length === 0; }
+function tv6Bad(pos, tgt, close = true) { // close cams: any of the four; TV: inside / near / under a deck with the marble hidden
+  if (insideAny(pos) || tv6Near(pos)) return true;
+  if (close) return tv6Under(pos) || !tv6Sight(pos, tgt);
+  return tv6Under(pos) && !tv6Sight(pos, tgt);
+}
+function tv6Resolve(p, tgt, off, head, i) { // relative offsets, first clean wins
+  const c = [], len = off.length(), d = off.clone().divideScalar(len || 1);
+  tv6R.set(tgt, d); tv6R.far = len + 0.6; const h = tv6R.intersectObjects(tv6Occ, false)[0];
+  if (h) c.push(d.clone().multiplyScalar(Math.max(2.2, h.distance - 1.0)).add(new THREE.Vector3(0, 0.3, 0)), d.clone().multiplyScalar(Math.max(2.2, h.distance - 1.0)).add(new THREE.Vector3(0, 2.2, 0)));
+  c.push(off.clone().add(new THREE.Vector3(0, 3, 0)), off.clone().add(new THREE.Vector3(0, 6, 0)));
+  for (const sd of [1, -1]) c.push(NRM[i].clone().multiplyScalar(sd * (HW[i] + 5)).addScaledVector(head, -2).add(new THREE.Vector3(0, 6, 0)));
+  c.push(head.clone().multiplyScalar(-2).add(new THREE.Vector3(0, 9, 0)), head.clone().multiplyScalar(-6).add(new THREE.Vector3(0, 4, 0)), head.clone().multiplyScalar(-2.6).add(new THREE.Vector3(0, 1.7, 0)), off.clone().multiplyScalar(0.3));
+  for (const o of c) if (!tv6Bad(p.clone().add(o), tgt)) return o;
+  return c[c.length - 2];
+}
+function tv6Spring(x, v, goal, W, dt) { const n = Math.max(1, Math.ceil(dt / 0.01)), h = dt / n; for (let k = 0; k < n; k++) { const a = goal.clone().sub(x).multiplyScalar(W * W).addScaledVector(v, -2 * W); v.addScaledVector(a, h); x.addScaledVector(v, h); } }
+function tv6Close(k, kind) { // Chase ('chase') and Front ('front'), live and replay
+  const now = performance.now(), dt = THREE.MathUtils.clamp((now - (TV6.last || now - 16)) / 1000, 0.001, 0.1); TV6.last = now;
+  const m = marbles[k], S0 = subject(k), p = m.mesh.position, i = S0.pr.i, tgt = p.clone().add(new THREE.Vector3(0, 0.3, 0));
+  const fresh = TV6.k !== k || TV6.mode !== kind || camSnap || !TV6.off; TV6.k = k; TV6.mode = kind;
+  if (fresh || !TV6.prevP) { TV6.prevP = p.clone(); const lv = m.body.linvel(); TV6.vel.set(lv.x, lv.y, lv.z); }
+  else { const v = p.clone().sub(TV6.prevP).divideScalar(dt); TV6.prevP.copy(p); if (v.length() < 300) TV6.vel.lerp(v, 1 - Math.exp(-dt * 6)); else TV6.vel.set(0, 0, 0); } // respawn jump: drop the lead
+  const th = new THREE.Vector3(S0.pr.tan.x, 0, S0.pr.tan.z).normalize(), hv = new THREE.Vector3(TV6.vel.x, 0, TV6.vel.z);
+  const wantA = Math.atan2(...(hv.length() > 4 && hv.clone().normalize().dot(th) > -0.2 ? [hv.z, hv.x] : [th.z, th.x]));
+  if (fresh) TV6.ha = wantA; else { let dA = wantA - TV6.ha; while (dA > Math.PI) dA -= 2 * Math.PI; while (dA < -Math.PI) dA += 2 * Math.PI; TV6.ha += dA * (1 - Math.exp(-dt * 2.0)); } // eased heading: hairpins become a pan, not a whip
+  const head = new THREE.Vector3(Math.cos(TV6.ha), 0, Math.sin(TV6.ha));
+  const onLift = LIFT && ((S0.pr.s - (LIFT.s0 - 6)) % L + L) % L < LIFT.s1 - LIFT.s0 + 9;
+  TV6.liftW += ((onLift ? 1 : 0) - TV6.liftW) * (fresh ? 1 : 1 - Math.exp(-dt * 2.2)); const w = TV6.liftW * TV6.liftW * (3 - 2 * TV6.liftW);
+  if (onLift && !TV6.side) { const toC = center.clone().sub(p).setY(0); TV6.side = NRM[i].dot(toC) > 0 ? -1 : 1; // outside of the loop first
+    const lo = (sd) => NRM[i].clone().multiplyScalar(sd * (HW[i] + 6)).add(new THREE.Vector3(0, 6.5, 0)); if (tv6Bad(p.clone().add(lo(TV6.side)), tgt) && !tv6Bad(p.clone().add(lo(-TV6.side)), tgt)) TV6.side = -TV6.side; }
+  if (!onLift && w < 0.02) TV6.side = 0;
+  const sd = TV6.side || 1, chase = kind === 'chase';
+  const nOff = chase ? head.clone().multiplyScalar(-13).add(new THREE.Vector3(0, 5.2, 0)) : head.clone().multiplyScalar(12).addScaledVector(NRM[i], 1.6).add(new THREE.Vector3(0, 3.8, 0));
+  const lOff = NRM[i].clone().multiplyScalar(sd * (HW[i] + 6)).addScaledVector(th, chase ? -3 : 5).add(new THREE.Vector3(0, 6.5, 0));
+  const goal = nOff.lerp(lOff, w);
+  const lead = TV6.vel.clone(); if (lead.length() > 60) lead.setLength(60);
+  const lGoal = chase ? head.clone().multiplyScalar(4).addScaledVector(lead, 0.1).add(new THREE.Vector3(0, 0.2, 0)) : head.clone().multiplyScalar(-1.5).addScaledVector(lead, 0.05).add(new THREE.Vector3(0, 0.3, 0));
+  lGoal.lerp(th.clone().multiplyScalar(chase ? 3 : 1).addScaledVector(lead, 0.06).add(new THREE.Vector3(0, 0.3, 0)), w);
+  if (fresh) { TV6.off = goal.clone(); TV6.offV.set(0, 0, 0); TV6.lo = lGoal.clone(); TV6.loV.set(0, 0, 0); }
+  else { tv6Spring(TV6.off, TV6.offV, goal, 3.2, dt); tv6Spring(TV6.lo, TV6.loV, lGoal, 4.5, dt); }
+  let pos = p.clone().add(TV6.off);
+  if (tv6Bad(pos, tgt)) { const o = tv6Resolve(p, tgt, TV6.off, head, i); TV6.off.copy(o); TV6.offV.multiplyScalar(0); pos = p.clone().add(o); TV6.fixes++; }
+  shotName = (chase ? 'CHASE · ' : 'FRONT · ') + m.name.toUpperCase() + (w > 0.5 ? ' · LIFT SIDE' : '');
+  return { pos, look: p.clone().add(TV6.lo), fov: THREE.MathUtils.lerp(chase ? 40 : 42, 46, w), kPos: 99, kLook: 99, kFov: 2.5 };
+}
+function tv6Guard(cp, tgt, sh) { // TV safety net on the smoothed lens: returns a replacement or null
+  if (!tv6Bad(cp, tgt, false)) return null;
+  for (const o of [[0, 2, 0], [0, 4, 0], [0, 7, 0]]) { const q = cp.clone().add(new THREE.Vector3(...o)); if (!tv6Bad(q, tgt, false)) { TV6.guards++; return q; } }
+  for (const f of [0.75, 0.5, 0.3]) { const q = tgt.clone().lerp(cp, f).add(new THREE.Vector3(0, 1, 0)); if (!tv6Bad(q, tgt, false)) { TV6.guards++; sh.blocked = 9; return q; } } // and let the director cut
+  sh.blocked = 9; TV6.guards++; return tgt.clone().add(new THREE.Vector3(0, 8, 0));
+}
+const tv6Lock = () => TV6.on && view.mode === 'live' && follow >= 0 && marbles[follow] && !marbles[follow].finished;
+function tv6Watch() { // per live frame (hook at the top of liveCamera)
+  if (!TV6.on) return;
+  if (TV6.follow !== follow) { const was = TV6.follow; TV6.follow = follow;
+    if (was !== undefined) { camSnap = true; dir.shot = null;
+      if (TV5.shot && !(TV5.shot.type === 'finish' && follow < 0)) { TV5.shot = null; TV5.lastCut = -1e9; TV5.snap = true; } // TV: re-cut now onto the new subject
+      if (follow >= 0 && marbles[follow]) { AD4.subK = follow; AD4.subLast = null; if (camMode === 1 && camera.parent === gondolaMount) { adBlimpPlan(follow); AD4.aimInit = true; AD4.blimpT0 = performance.now(); } }
+      try { renderBoard(); renderCamBtns(); } catch (e) {} } }
+  if (tv6Lock() && AD4.subK !== follow) { AD4.subK = follow; AD4.subLast = null; const sh = TV5.shot; if (sh && sh.type === 'blimp' && camMode === 0) { sh.k = follow; sh.k2 = -1; } }
+}
+function tv6Replan() { const now = performance.now(); if (now - TV6.planAt > 1500 && view.mode === 'live') { TV6.planAt = now; adBlimpPlan(follow); AD4.aimInit = true; camSnap = true; } }
+addEventListener('keydown', (e) => { // 1-4 = player 1-4, 0 = race director, [ / ] = previous / next marble by race position
+  if (!TV6.on || /INPUT|TEXTAREA/.test(e.target?.tagName || '')) return; let k = null;
+  if (/^[1-4]$/.test(e.key)) { const p = session.players[+e.key - 1]; if (p) k = p.k; } else if (e.key === '0') k = -1;
+  else if (e.key === '[' || e.key === ']') { const st = standings(); const i = st.findIndex((m) => m.k === follow); k = st[((i < 0 ? 0 : i + (e.key === ']' ? 1 : -1)) + st.length) % st.length].k; }
+  if (k === null) return; follow = k; dir.shot = null; camSnap = true; renderCamBtns(); renderBoard();
+});
+// ---- probe (harness only): on-screen speed per camera and a per-frame clip scan of the live lens ----
+const TV6P = { on: false, vp: null, sub: null, cp: null, cut: 0, agg: {}, clip: {}, frames: 0 };
+function tv6Label() { if (view.mode !== 'live') return 'REPLAY'; if (camMode === 1) return 'BLIMP'; if (camMode === 2) return 'CHASE'; if (camMode === 3) return 'FRONT'; const sh = TV5.shot; return sh ? 'TV:' + (sh.type === 'station' ? sh.st.type : sh.type) : 'TV'; }
+function tv6SubK() { if (camMode === 0 && TV5.shot) return TV5.shot.k; if (camMode === 1) return AD4.subK ?? (follow >= 0 ? follow : standings()[0].k); return follow >= 0 ? follow : standings()[0].k; }
+function tv6Probe() {
+  if (!TV6P.on || race.phase !== 'race' || view.mode !== 'live') { TV6P.vp = null; return; }
+  camera.updateMatrixWorld(true); const vp = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse), cw = camera.getWorldPosition(new THREE.Vector3());
+  const k = tv6SubK(), m = marbles[k], lab = tv6Label(), now = performance.now(), asp = camera.aspect; TV6P.frames++;
+  const ndc = (w, M) => { const v = new THREE.Vector4(w.x, w.y, w.z, 1).applyMatrix4(M); return v.w > 0.1 ? [v.x / v.w, v.y / v.w] : null; };
+  const cutNow = TV6P.lastCut !== TV5.lastCut || TV6P.lab !== lab || TV6P.k !== k || (TV6P.cp && TV6P.cp.distanceTo(cw) > 10); TV6P.lastCut = TV5.lastCut; TV6P.lab = lab; TV6P.k = k;
+  if (cutNow) TV6P.cut = now;
+  if (TV6P.vp && now - TV6P.cut > 250 && TV6P.dt > 0) { const dt = (now - TV6P.t) / 1000;
+    const flows = []; for (let ds = -10; ds <= 40; ds += 2.5) { const w = pointAtS(m.pr.s + ds).p.add(new THREE.Vector3(0, 0.2, 0)); const a = ndc(w, vp), b = ndc(w, TV6P.vp); if (a && b && Math.abs(a[0]) < 1 && Math.abs(a[1]) < 1 && Math.abs(b[0]) < 1 && Math.abs(b[1]) < 1) flows.push(Math.hypot((a[0] - b[0]) / 2, (a[1] - b[1]) / 2 / asp) / dt); }
+    const a = ndc(m.mesh.position, vp), b = TV6P.sub ? ndc(TV6P.sub, TV6P.vp) : null;
+    if (flows.length >= 3 && a && b && dt > 0.004 && dt < 0.1) { flows.sort((x, y) => x - y); const g = TV6P.agg[lab] || (TV6P.agg[lab] = { world: [], subj: [], ang: [] }); if (g.world.length < 20000) { g.world.push(flows[flows.length >> 1]); g.subj.push(Math.hypot((a[0] - b[0]) / 2, (a[1] - b[1]) / 2 / asp) / dt);
+      const d0 = TV6P.dir, d1 = camera.getWorldDirection(new THREE.Vector3()); g.ang.push(d0 ? d0.angleTo(d1) * 57.3 / dt : 0); } }
+  }
+  TV6P.dir = camera.getWorldDirection(new THREE.Vector3());
+  { const close = lab === 'CHASE' || lab === 'FRONT', tgt = m.mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0)); const c = TV6P.clip[lab] || (TV6P.clip[lab] = { n: 0, inside: 0, under: 0, near: 0, blocked: 0, underBlind: 0, bad: [] });
+    c.n++; const ins = insideAny(cw), und = tv6Under(cw), nr = tv6Near(cw), sg = tv6Sight(cw, tgt); if (ins) c.inside++; if (und) c.under++; if (nr) c.near++; if (!sg) c.blocked++; if (und && !sg) c.underBlind++;
+    if ((close && (ins || und || nr || !sg) || (!close && (ins || nr || (und && !sg)))) && c.bad.length < 40) c.bad.push({ t: +race.t.toFixed(2), piece: pieceAt(m.pr.s), ins, und, nr, sg, cam: cw.toArray().map((x) => +x.toFixed(1)) }); }
+  TV6P.vp = vp; TV6P.sub = m.mesh.position.clone(); TV6P.cp = cw; TV6P.t = now; TV6P.dt = 1;
+}
+{ const prev = scene.onBeforeRender; scene.onBeforeRender = function (...a) { if (prev) prev.apply(this, a); try { tv6Probe(); } catch (e) { console.warn('[tv6 probe]', e.message); } }; }
+window.__dh.tv6 = { probe: (on = true) => { TV6P.on = on; TV6P.vp = null; }, reset: () => { TV6P.agg = {}; TV6P.clip = {}; TV6P.frames = 0; }, raw: () => TV6P,
+  report: () => { const med = (a) => { a = a.slice().sort((x, y) => x - y); return a.length ? +a[a.length >> 1].toFixed(3) : null; }, p90 = (a) => { a = a.slice().sort((x, y) => x - y); return a.length ? +a[Math.floor(a.length * 0.9)].toFixed(3) : null; };
+    const speed = {}; for (const [k, g] of Object.entries(TV6P.agg)) speed[k] = { n: g.world.length, world: med(g.world), world90: p90(g.world), subj: med(g.subj), subj90: p90(g.subj), ang: med(g.ang), ang90: p90(g.ang) };
+    return { speed, clip: TV6P.clip, frames: TV6P.frames, fixes: TV6.fixes, guards: TV6.guards, on: TV6.on }; },
+  follow: () => ({ follow, camMode, tv: TV5.shot && TV5.shot.k, blimp: AD4.subK, tvType: TV5.shot && TV5.shot.type, shot: shotName }),
+  ndcOf: (k) => { const v = marbles[k].mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0)).project(camera); return [+v.x.toFixed(2), +v.y.toFixed(2), v.z < 1]; },
+  centerK: () => { let b = -1, bd = 9; for (const m of marbles) { const v = m.mesh.position.clone().project(camera); const d = Math.hypot(v.x, v.y); if (v.z < 1 && d < bd) { bd = d; b = m.k; } } return b; },
+  occCount: () => tv6Occ.length };
+// ---------- /AD TV r6 ----------
