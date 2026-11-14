@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from './vendor/jsm/loaders/GLTFLoader.js';
 import { RoomEnvironment } from './vendor/jsm/RoomEnvironment.js';
 import RAPIER from './vendor/rapier.mjs';
+import { initTown } from './ad_town.js'; // AD critic pass 1 (11-14): living town, water shader, crowd loops, tram, drones (see ad_town.js)
 
 const Q = new URLSearchParams(location.search);
 const $ = (id) => document.getElementById(id);
@@ -123,6 +124,7 @@ world3d.traverse((o) => { if (o.isMesh) { o.castShadow = o.receiveShadow = false
 // look pass 3: horizon ring + far ground are painted backdrops: unlit, unfogged (haze is painted in), cut-out alpha on the ring
 world3d.traverse((o) => { if (o.isMesh && /^LP3_bg_/.test(o.name)) { const src = o.material; const map = src.map || src.emissiveMap; o.material = new THREE.MeshBasicMaterial({ map, transparent: false, alphaTest: /horizon/.test(o.name) ? 0.5 : 0, side: THREE.DoubleSide, fog: false, depthWrite: true }); o.renderOrder = -1; src.dispose(); } });
 const node = (n) => world3d.getObjectByName(n);
+const adTown = initTown({ THREE, scene, world3d, isMobile }); // AD critic pass 1: vignettes, crowd loops, water, koi + canal fish, tram, drones
 
 // ---------- TRACK CONTRACT: racing line ----------
 // Priority: TRACK_centerline (mesh/line polyline, edges chained) > TRACK_PATH.extras.dh_path_yup > derived from TRACK_floor.
@@ -233,14 +235,16 @@ if (LIFT) liftPos = pointAtS((LIFT.s0 + LIFT.s1) / 2).p.clone();
 // ---------- physics (unchanged feel; Claude Morty owns balancing) ----------
 // v4 REAL SCALE: 1 unit = one 16 mm marble, so Earth gravity = 9.81 / 0.016 = 613 u/s^2 (was 24: everything moved like boulders in slow motion).
 // No min-speed assist (minv=0); the only aid left is the counted 'marshal' nudge for a marble truly stopped > 1 s.
-const PHYS = { g: +(Q.get('g') || 613), drag: +(Q.get('drag') || 0.006), dragVar: 0.3, liftV: +(Q.get('lift') || 16), railF: +(Q.get('railf') ?? 0.04), liftLead: 9, flick: +(Q.get('flick') || 2.6), flZone: 3.0, flUp: +(Q.get('flup') ?? 0.9), minV: +(Q.get('minv') ?? 0), assist: 60, ts: +(Q.get('ts') || 1), pitch: 3.2 };
+const PHYS = { g: +(Q.get('g') || 613), drag: +(Q.get('drag') || 0.006), dragVar: 0.3, liftV: +(Q.get('lift') || 16), railF: +(Q.get('railf') ?? 0.04), liftLead: 9, flick: +(Q.get('flick') || 2.6), flZone: 3.0, flUp: +(Q.get('flup') ?? 0.35), minV: +(Q.get('minv') ?? 0), assist: 60, ts: +(Q.get('ts') || 1), pitch: 3.2 };
+if (X.dh_lift_lead != null) PHYS.liftLead = +X.dh_lift_lead; // Claude T-031: the track says where its paddles start rising
 const world = new RAPIER.World({ x: 0, y: -PHYS.g, z: 0 });
 world.timestep = DT;
 world.integrationParameters.numSolverIterations = 4;
 const CMIN = RAPIER.CoefficientCombineRule ? RAPIER.CoefficientCombineRule.Min : null;
 let triCount = 0;
 const SMOOTH = Q.get('smooth') !== '0'; // v4: physics floor rebuilt smooth from the centerline (see SMOOTH COLLISION FLOOR); ?smooth=0 = raw glb trimesh
-for (const nm of ['TRACK_floor', 'TRACK_rail_inner_cyan', 'TRACK_rail_outer_pink']) {
+const COLLIDE = ['TRACK_floor', 'TRACK_rail_inner_cyan', 'TRACK_rail_outer_pink']; world3d.traverse((o) => { if (/^TRACK_collide_/.test(o.name) && !COLLIDE.includes(o.name)) COLLIDE.push(o.name); }); // Claude T-032: set-piece colliders (pins, deflectors, walls)
+for (const nm of COLLIDE) {
   if (SMOOTH && nm === 'TRACK_floor') continue;
   const root = node(nm); if (!root) { console.warn('missing', nm); continue; }
   const meshes = []; root.traverse((o) => o.isMesh && meshes.push(o));
@@ -251,7 +255,8 @@ for (const nm of ['TRACK_floor', 'TRACK_rail_inner_cyan', 'TRACK_rail_outer_pink
     const idx = g.index ? Uint32Array.from(g.index.array) : Uint32Array.from({ length: pos.count }, (_, i) => i);
     triCount += idx.length / 3;
     const flags = RAPIER.TriMeshFlags ? (RAPIER.TriMeshFlags.FIX_INTERNAL_EDGES | RAPIER.TriMeshFlags.MERGE_DUPLICATE_VERTICES) : undefined;
-    const desc = flags !== undefined ? RAPIER.ColliderDesc.trimesh(v, idx, flags) : RAPIER.ColliderDesc.trimesh(v, idx);
+    const solid = /^TRACK_collide_pin/.test(nm); // Claude T-032: pins/bumpers are solid convex bodies (a fast marble can't tunnel into a thin shell)
+    const desc = solid ? RAPIER.ColliderDesc.convexHull(v) : flags !== undefined ? RAPIER.ColliderDesc.trimesh(v, idx, flags) : RAPIER.ColliderDesc.trimesh(v, idx);
     const isFloor = nm === 'TRACK_floor';
     desc.setFriction(isFloor ? 0.7 : PHYS.railF).setRestitution(isFloor ? 0.08 : 0.4); if (isFloor && CMIN != null) desc.setRestitutionCombineRule(CMIN); if (!isFloor && CMIN != null) desc.setFrictionCombineRule(CMIN); // v4: rails were averaging to mu 0.27 with the marble and braking every marble that touched them // glass on plastic deck: dead; rails: a real rattle
     world.createCollider(desc);
@@ -261,26 +266,28 @@ const NM = Math.min(RACERS.length, Math.max(1, spawns.length));
 const sphereGeo = new THREE.SphereGeometry(R, 32, 20);
 // ---------- AD T-030b SUMO v2 (Grok Bot / Art Director, 11-14): own block, called from skin() + one line in the render loop ----------
 // Sumo marbles carry a tangent normal map (_n) and an ORM map (_orm: G = roughness, B = metalness) next to the albedo, plus silk sheen.
-// The two "Mini" marbles are a clear glass shell with a small stylised rikishi inside (marbles/sumo_rikishi.glb, 57 KB, quantized,
-// no Draco). The figure is a child of the ball and is counter-rotated every frame so it stays upright and turns to face the camera.
+// The two "Mini" marbles are a clear glass shell with a small stylised rikishi inside (marbles/sumo_rikishi.glb, v5 T-030e: voxel-sculpted,
+// feet, thumbs, full belt + tate-mitsu, baked AO/SSS vertex colours, 130 KB, KHR_mesh_quantization, no Draco/meshopt: the vendor folder has no decoders). The figure is a child of the ball and is counter-rotated every frame so it stays upright and turns to face the camera.
 const SUMO2 = {
-  sumo_gunbai: { coat: 0.5, env: 1.2 },
+  sumo_gunbai: { glass: 'rikishi_gunbai', sc: 0.5, center: 1 }, // T-030g: a real 3D gunbai (Jarod ref j1/j2: butterfly blade, spine, sun/moon, 天下泰平, gold rim, cord + tassel) floating in clear glass
   sumo_mawashi_kuro: { sheen: 0x2c2c38, sheenR: 0.35, env: 0.9 }, sumo_mawashi_murasaki: { sheen: 0x9a70c0, sheenR: 0.35 },
   sumo_mawashi_kin: { sheen: 0xffd890, sheenR: 0.3, env: 1.3 },
-  sumo_gyoji_kurenai: { sheen: 0xff8a70, sheenR: 0.45, coat: 0.1 }, sumo_gyoji_midori: { sheen: 0x70d0a0, sheenR: 0.45, coat: 0.1 },
+  sumo_gyoji_kurenai: { sheen: 0x7a2418, sheenR: 0.5, coat: 0 }, sumo_gyoji_midori: { sheen: 0x1f5a3a, sheenR: 0.5, coat: 0 }, // T-030g r2: flat woven crests + cream sash + fluffy kikutoji (j3/j4); no clear-coat (it made the crests read as enamel badges)
   sumo_yokozuna: { sheen: 0x9a78c8, sheenR: 0.45 }, sumo_kesho: { sheen: 0x9a78c8, sheenR: 0.45 },
-  sumo_mini_shiko: { glass: 'rikishi_shiko', sc: 0.66 }, sumo_mini_dohyoiri: { glass: 'rikishi_dohyoiri', sc: 0.56 },
+  sumo_mini_shiko: { glass: 'rikishi_shiko', sc: 0.385 }, sumo_mini_dohyoiri: { glass: 'rikishi_dohyoiri', sc: 0.385 }, // T-030g: rebuilt to j6-j8 proportions, fitted inside r 0.465
 };
 const adSumoTex = {}, adSumoT = (f) => adSumoTex[f] || (adSumoTex[f] = (() => { const t = texLoader.load(`./marbles/${f}.jpg`); t.anisotropy = 4; return t; })());
 let adSumoFigs = null; // Promise -> { name: Object3D }
+const SUMO2_CENTER = new Set(Object.values(SUMO2).filter((L) => L.center).map((L) => L.glass)); // T-030g
 function adSumoFig(name, sc) {
-  adSumoFigs ??= new Promise((ok) => new GLTFLoader().load('./marbles/sumo_rikishi.glb', (g) => { const o = {}; g.scene.traverse((n) => { if (n.name.startsWith('rikishi_')) o[n.name] = n; }); ok(o); }, undefined, () => ok({})));
+  adSumoFigs ??= new Promise((ok) => new GLTFLoader().load('./marbles/sumo_rikishi.glb', (g) => { const o = {}; g.scene.traverse((n) => { if (n.name.startsWith('rikishi_')) o[n.name] = n; if (n.material && n.material.name === 'dh_skin') { n.material.color.setHex(0xb4704f); n.material.roughness = 0.48; /* T-030g r3: warm tan skin (j7 chest/cheek), soft sheen from the glb */ } if (n.material && n.material.name === 'dh_paper') n.material.side = THREE.DoubleSide; }); ok(o); }, undefined, () => ok({})));
   const holder = new THREE.Group(); holder.name = 'AD_sumo_fig';
   adSumoFigs.then((o) => {
     if (!o[name]) return;
-    const w = new THREE.Group(), c = o[name].clone(); w.add(c); w.scale.setScalar(sc); w.position.y = -0.33 * (R / 0.5); holder.add(w);
+    const cen = SUMO2_CENTER.has(name); // T-030g: the gunbai floats centred (no floor disc)
+    const w = new THREE.Group(), c = o[name].clone(); w.add(c); w.scale.setScalar(sc); w.position.y = cen ? 0 : -0.33 * (R / 0.5); holder.add(w);
     w.updateMatrixWorld(true); const bb = new THREE.Box3().setFromObject(c), ctr = bb.getCenter(new THREE.Vector3()).divideScalar(sc);
-    c.position.x -= ctr.x; c.position.z -= ctr.z; c.position.y -= (bb.min.y - w.position.y) / sc;
+    c.position.x -= ctr.x; c.position.z -= ctr.z; c.position.y -= cen ? ctr.y : (bb.min.y - w.position.y) / sc;
     holder.scale.setScalar(R / 0.5);
   });
   return holder;
@@ -288,23 +295,37 @@ function adSumoFig(name, sc) {
 function adSumoSkin(m, file) {
   const L = SUMO2[file], t = m.mat;
   if (m.adFig) m.adFig.visible = !!(L && L.glass && m.adFigName === L.glass);
+  if (m.adRim) m.adRim.visible = !!(L && L.glass);
   if (!L) {
-    if (m.adSumo) { t.normalMap = t.roughnessMap = t.metalnessMap = null; t.sheen = 0; t.transparent = false; t.opacity = 1; t.depthWrite = true; t.color.set(0xffffff); m.adSumo = 0; t.needsUpdate = true; }
+    if (m.adSumo) { t.normalMap = t.roughnessMap = t.metalnessMap = t.clearcoatRoughnessMap = null; t.sheen = 0; t.transparent = false; t.opacity = 1; t.depthWrite = true; t.color.set(0xffffff); m.adSumo = 0; t.needsUpdate = true; }
     return;
   }
   m.adSumo = 1;
   if (L.glass) {
-    t.normalMap = t.roughnessMap = t.metalnessMap = null; t.sheen = 0;
-    t.transparent = true; t.opacity = 0.3; t.depthWrite = false; t.roughness = 0.02; t.metalness = 0; t.clearcoat = 1; t.clearcoatRoughness = 0.0; t.envMapIntensity = 3.2; t.specularIntensity = 1;
+    t.normalMap = t.roughnessMap = t.metalnessMap = t.clearcoatRoughnessMap = null; t.sheen = 0;
+    t.map = null; t.color.set(0xcfe9f7); t.transparent = true; t.opacity = 0.1; t.depthWrite = false; t.roughness = 0.02; t.metalness = 0; t.clearcoat = 1; t.clearcoatRoughness = 0.0; t.envMapIntensity = 2.4; t.specularIntensity = 1;
+    if (!m.adRim) { m.adRim = new THREE.Mesh(sphereGeo, adRimMat); m.adRim.scale.setScalar(1.003); m.adRim.renderOrder = 3; m.mesh.add(m.adRim); }
+    m.adRim.visible = true;
     if (!m.adFig || m.adFigName !== L.glass) { if (m.adFig) m.mesh.remove(m.adFig); m.adFig = adSumoFig(L.glass, L.sc); m.adFigName = L.glass; m.mesh.add(m.adFig); }
     m.adFig.visible = true;
   } else {
-    t.transparent = false; t.opacity = 1; t.depthWrite = true;
+    t.transparent = false; t.opacity = 1; t.depthWrite = true; t.color.set(0xffffff);
     t.normalMap = adSumoT(file + '_n'); t.normalScale.set(1, 1); t.roughnessMap = t.metalnessMap = adSumoT(file + '_orm'); t.roughness = 1; t.metalness = 1;
-    t.clearcoat = L.coat ?? 0; t.clearcoatRoughness = 0.06; t.envMapIntensity = L.env ?? 1.1;
+    t.clearcoat = L.coat ?? 0; t.clearcoatRoughnessMap = L.ccMap ? t.roughnessMap : null; t.clearcoatRoughness = L.ccMap ? 1 : 0.06; t.envMapIntensity = L.env ?? 1.1;
     t.sheen = L.sheen ? 1 : 0; t.sheenRoughness = L.sheenR ?? 0.4; t.sheenColor.set(L.sheen || 0);
   }
   t.needsUpdate = true;
+}
+const adRimMat = new THREE.ShaderMaterial({ // glass read: crisp fresnel rim + a fixed specular glint, additive, no milk
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  uniforms: { rim: { value: new THREE.Color(0xbfe6ff) } },
+  vertexShader: 'varying vec3 vN; varying vec3 vV; void main(){ vec4 mv = modelViewMatrix * vec4(position, 1.0); vN = normalize(normalMatrix * normal); vV = normalize(-mv.xyz); gl_Position = projectionMatrix * mv; }',
+  fragmentShader: 'uniform vec3 rim; varying vec3 vN; varying vec3 vV; void main(){ vec3 n = normalize(vN), v = normalize(vV); float ndv = clamp(dot(n, v), 0.0, 1.0); float fr = pow(1.0 - ndv, 3.0); vec3 h1 = normalize(vec3(-0.62, 0.62, 0.48)), h2 = normalize(normalize(vec3(0.6, -0.2, 0.75)) + v); float sp = pow(max(dot(n, h1), 0.0), 900.0) * 1.6 + pow(max(dot(n, h2), 0.0), 60.0) * 0.18; gl_FragColor = vec4(rim * (fr * 0.85 + 0.015) + vec3(sp), 1.0); }',
+});
+function adFieldDedupe() { // never two of the same marble on the grid (players keep theirs, a CPU duplicate gets an unused design)
+  const own = new Set(session.players.map((p) => p.k)), seen = new Set(), used = new Set(FIELD.slice(0, NM));
+  const order = [...Array(NM).keys()].sort((a, b) => own.has(b) - own.has(a));
+  for (const k of order) { if (seen.has(FIELD[k])) { const r = [...ROSTER.keys()].find((x) => !used.has(x)); FIELD[k] = r; used.add(r); } seen.add(FIELD[k]); }
 }
 const _adQ = new THREE.Quaternion(), _adQ2 = new THREE.Quaternion(), _adV = new THREE.Vector3(), _adC = new THREE.Vector3(), _adY = new THREE.Vector3(0, 1, 0);
 function adSumoTick() { // keep the mini rikishi upright and turned toward the camera, whatever the ball is doing
@@ -383,7 +404,7 @@ function gondolaCam(dt, look, fov) { // camera is a true child of the gondola; w
 function detachCam() { if (camera.parent === gondolaMount) { gondolaMount.remove(camera); camera.quaternion.identity(); camera.up.set(0, 1, 0); setNear(0.2); } }
 function updateBlimp(dt, now, focus, fwd) {
   if (!blimp) return;
-  const want = focus.clone().addScaledVector(new THREE.Vector3(fwd.x, 0, fwd.z).normalize(), 10).add(new THREE.Vector3(0, BL.H, 0)); // v4: rides just ahead of the pack, low enough to be in the chase shot
+  const want = (typeof adBlimpWant === 'function' && adBlimpWant(focus)) || focus.clone().addScaledVector(new THREE.Vector3(fwd.x, 0, fwd.z).normalize(), 10).add(new THREE.Vector3(0, BL.H, 0)); // AD TV r4 hook: high hover (block at the end) // v4: rides just ahead of the pack, low enough to be in the chase shot
   // critically-damped-ish spring with a speed limit: slow, floaty, never snaps
   const acc = want.sub(BL.pos).multiplyScalar(1.4).addScaledVector(BL.vel, -2.2);
   BL.vel.addScaledVector(acc, dt); if (BL.vel.length() > 55) BL.vel.setLength(55);
@@ -560,6 +581,7 @@ function resetRace() {
     const own = new Set(session.players.map((p) => p.k)), keep = new Set([...own].map((k) => FIELD[k]));
     const pool = [...ROSTER.keys()].filter((r) => !keep.has(r)).sort(() => rnd() - 0.5); let j = 0;
     for (let k = 0; k < NM; k++) if (!own.has(k)) FIELD[k] = pool[j++];
+    adFieldDedupe(); // AD T-030b guard
     marbles.forEach((_, k) => skin(k));
   }
   const slots = [...Array(NM).keys()].sort(() => rnd() - 0.5);
@@ -569,7 +591,7 @@ function resetRace() {
     m.body.setLinvel({ x: 0, y: 0, z: 0 }, true); m.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
     m.hint = project(sp, FIN, true).i;
     const pr = project(sp, m.hint); m.prog = wrap(pr.s - SFIN); m.lastS = pr.s; m.pr = pr;
-    m.drag = PHYS.drag * (1 - PHYS.dragVar + 2 * PHYS.dragVar * rnd()); m.body.setLinearDamping(m.drag); // per-marble rolling drag = the "form" that spreads the field
+    m.drag = PHYS.drag * (1 - PHYS.dragVar + 2 * PHYS.dragVar * rnd()); m.body.setLinearDamping(m.drag); m.slowed = false; // per-marble rolling drag = the "form" that spreads the field
     Object.assign(m, { finished: false, finishTime: 0, falls: 0, stall: 0, stucks: 0, assistT: 0, onLift: false, passes: [], piece: '', lapTimes: [], lastLapAt: 0, lap: 0, pos: 0, arrow: 0, arrowUntil: 0 });
     m.vhint = m.hint; m.mesh.visible = true; m.mat.emissive.copy(m.baseEm);
   });
@@ -627,7 +649,7 @@ function physicsStep() {
       if (PHYS.minV > 0 && !m.onLift && race.t > 1 && vAlong < PHYS.minV) { const a = Math.min(PHYS.assist * (HAIR[pr.i] ? 1.5 : 1), (PHYS.minV - vAlong) * 1.5); m.body.applyImpulse({ x: pr.tan.x * a * mass * DT, y: 0, z: pr.tan.z * a * mass * DT }, true); m.assistT += DT; }
       if (!m.onLift && Math.hypot(lv.x, lv.z) < 0.8 && race.t > 3) { m.stall += DT; if (m.stall > 1.0) { const nr = NRM[pr.i], sl = -Math.sign(pr.lat) * 1.5; m.body.applyImpulse({ x: (pr.tan.x * 12 + nr.x * sl) * mass, y: mass * 4, z: (pr.tan.z * 12 + nr.z * sl) * mass }, true); m.stall = 0; m.stucks++; (race.stuckAt[pieceAt(pr.s) || '?'] = (race.stuckAt[pieceAt(pr.s) || '?'] || 0) + 1); } } else m.stall = 0;
       if (race.t < 0.4) m.body.applyImpulse({ x: pr.tan.x * mass * 30 * DT, y: 0, z: pr.tan.z * mass * 30 * DT }, true); // start gate push-off
-      if (m.finished) m.body.setLinvel({ x: lv.x * 0.995, y: lv.y, z: lv.z * 0.995 }, true);
+      if (m.finished && !m.slowed) { m.slowed = true; m.body.setLinearDamping(0.6); } // Claude T-031: finished marbles coast down smoothly (the old per-step x/z brake fought the lift paddles and flung them off the crest)
     }
     if (racing && !m.finished) { const pc = pieceAt(pr.s); if (pc && pc !== m.piece) m.passes.push({ t: race.t, piece: pc, lap: Math.floor(m.prog / L) }); m.piece = pc; }
     const lapNow = Math.floor(m.prog / L);
@@ -702,7 +724,7 @@ const visibleT = (a, b) => visible(a, b) && visible(a, b, trackOcc); // v3: stac
 const occBoxes = occluders.map((o) => new THREE.Box3().setFromObject(o)).filter((b) => b.getSize(new THREE.Vector3()).length() < 60);
 function insideAny(p) { for (const b of occBoxes) if (b.containsPoint(p)) return true; return false; }
 // v3 set pieces (raw centerline sample ranges of track v2; fall back to evenly spread cams on other tracks)
-const PIECES = rawPts.length === 383 ? [
+const PIECES = X.dh_pieces ? JSON.parse(X.dh_pieces) : rawPts.length === 383 ? [ // Claude T-032: named set pieces come from the glb (dh_pieces) when present
   ['FINISH STRAIGHT', 0, 40], ['SWEEPER', 42, 68], ['CHAIN LIFT', 70, 112], ['CREST', 112, 128], ['THE DROP', 140, 190],
   ['CORKSCREW', 192, 262], ['THE NARROW', 274, 306], ['ZEN HAIRPIN', 306, 330], ['TORII S', 334, 360], ['DOHYO HAIRPIN', 360, 382],
 ] : Array.from({ length: 8 }, (_, k) => ['TRACK', Math.floor(k * rawPts.length / 8), Math.floor((k + 1) * rawPts.length / 8)]);
@@ -766,6 +788,9 @@ if (Q.get('lanes') !== '0' && floorMeshes.length) {
 if (SMOOTH && floorMeshes.length) {
   const ds = 0.4, nS = Math.ceil(L / ds), nX = 9, H = [], ok = [];
   for (let a = 0; a < nS; a++) { const { p, i } = pointAtS(a * ds); const row = [], okr = []; for (let b = 0; b < nX; b++) { const lat = (b / (nX - 1) * 2 - 1) * (HW[i] + 0.4); const q = p.clone().addScaledVector(NRM[i], lat); const y = deckY(q); row.push(y ?? p.y - 0.5); okr.push(y != null); } H.push(row); ok.push(okr); }
+  // Claude T-031: lanes under the rails (|lat| > HW) miss the deck mesh; extend the deck plane out to them instead of dropping
+  // them 0.5 u (that made a gutter along both rails where the rising lift paddles pinched marbles against the rail: 100-480 u/s kicks)
+  for (let a = 0; a < nS; a++) { const r = H[a], o = ok[a]; for (const [e, i1, i2] of [[0, 1, 2], [nX - 1, nX - 2, nX - 3]]) if (!o[e] && o[i1] && o[i2]) { r[e] = 2 * r[i1] - r[i2]; o[e] = true; } }
   for (let b = 0; b < nX; b++) for (let a = 0; a < nS; a++) if (!ok[a][b]) { let l = 1; while (l < 40 && !ok[(a - l + nS) % nS][b] && !ok[(a + l) % nS][b]) l++; const y1 = ok[(a - l + nS) % nS][b] ? H[(a - l + nS) % nS][b] : null, y2 = ok[(a + l) % nS][b] ? H[(a + l) % nS][b] : null; H[a][b] = y1 != null && y2 != null ? (y1 + y2) / 2 : (y1 ?? y2 ?? H[a][b]); }
   const W = 4, wts = []; for (let k = -W; k <= W; k++) wts.push(Math.exp(-(k * k) / (2 * 2.2 * 2.2)));
   const HS = H.map((row, a) => row.map((_, b) => { let sw = 0, sy = 0; for (let k = -W; k <= W; k++) { const r = (a + k + nS) % nS; const y = H[r][b]; if (Math.abs(y - H[a][b]) > 1.2) continue; sw += wts[k + W]; sy += wts[k + W] * y; } return sy / sw; }));
@@ -787,22 +812,23 @@ if (SMOOTH && floorMeshes.length) {
 // Each paddle is a KINEMATIC Rapier body, so marbles are physically carried in the pockets, at belt speed, no invisible push.
 // At the top the paddle sinks back through the deck slot on a long, gentle ramp, so the marble is set down and rolls off at belt speed (no launch).
 if (LIFT && floorMeshes.length) liftMech = (() => {
-  const uA = LIFT.s0 - PHYS.liftLead, uB = LIFT.s1, Lf = uB - uA, RISE = 4.0, DEPTH = 1.4, FL = PHYS.flZone, FK = PHYS.flick, LfP = Lf - FL + FL / FK;
+  const uA = LIFT.s0 - PHYS.liftLead, uB = LIFT.s1, Lf = uB - uA, RISE = +(Q.get('rise') || 1.0), DEPTH = 1.4, FL = PHYS.flZone, FK = PHYS.flick, LfP = Lf - FL + FL / FK;
   const nP = Math.max(4, Math.floor((LfP + Lf + 2 * DEPTH) / PHYS.pitch)), loop = nP * PHYS.pitch;
   // sample deck frame along the lift every 0.25 u
-  const fr = []; for (let u = uA - 1; u <= uB + 1.01; u += 0.25) { const { p, i } = pointAtS(u); const y = deckY(p); fr.push({ u, p: new THREE.Vector3(p.x, y ?? p.y - 0.5, p.z), i }); }
-  const at = (u) => { const k = THREE.MathUtils.clamp((u - (uA - 1)) / 0.25, 0, fr.length - 1.001); const k0 = Math.floor(k), f = k - k0; const a = fr[k0], b = fr[k0 + 1]; return { p: a.p.clone().lerp(b.p, f), i: a.i, t: b.p.clone().sub(a.p).normalize() }; };
+  const fr = []; for (let u = uA - 1; u <= uB + 1.01; u += 0.25) { const { p, i } = pointAtS(u); const y = deckY(p); const w = HW[i] * 0.8, a = p.clone().addScaledVector(NRM[i], w), b = p.clone().addScaledVector(NRM[i], -w); const ya = deckY(a), yb = deckY(b); const x = ya != null && yb != null ? a.setY(ya).sub(b.setY(yb)).normalize() : NRM[i].clone(); fr.push({ u, p: new THREE.Vector3(p.x, y ?? p.y - 0.5, p.z), i, x }); } // Claude T-031: x axis = the deck's real cross-slope
+  const at = (u) => { const k = THREE.MathUtils.clamp((u - (uA - 1)) / 0.25, 0, fr.length - 1.001); const k0 = Math.floor(k), f = k - k0; const a = fr[k0], b = fr[k0 + 1]; return { p: a.p.clone().lerp(b.p, f), i: a.i, t: a.t.clone().lerp(b.t, f).normalize(), x: a.x.clone().lerp(b.x, f).normalize() }; };
+  for (let k = 0; k < fr.length; k++) { const a = fr[Math.max(0, k - 3)], b = fr[Math.min(fr.length - 1, k + 3)]; fr[k].t = b.p.clone().sub(a.p).normalize(); } // Claude T-031: tangent smoothed over 1.5 u and interpolated, so a paddle never snaps 5-25 degrees in one step at the lift foot/top (its 3.3 u ends were whipping marbles at 100-600 u/s)
   const hwMin = (() => { let m = 99; for (const f of fr) m = Math.min(m, HW[f.i]); return m; })();
   const half = { x: hwMin - 0.2, y: 0.42, z: 0.12 };
   const ease = (x) => x * x * (3 - 2 * x);
   const _m = new THREE.Matrix4(), _x = new THREE.Vector3(), _y = new THREE.Vector3(), _z = new THREE.Vector3(), _qq = new THREE.Quaternion();
   function pose(ph, out) { // ph in [0, loop): forward run on top, then the return run below the deck
-    let u, h, z;
+    let u, h, z; out.ghost = false;
     if (ph < Lf - FL) { u = uA + ph; z = 1; h = ease(Math.min(1, (u - uA) / RISE)); }
     else if (ph < LfP) { const x = (ph - (Lf - FL)) / (FL / FK); u = uB - FL + x * FL; z = 1; // FLING: the paddle whips forward at FK x belt speed and flips up, tossing the marble over the crest
-      h = x < 0.55 ? 1 + PHYS.flUp * Math.sin(Math.PI * x / 0.55) : ease(Math.max(0, 1 - (x - 0.55) / 0.45)); }
-    else { u = uB - (ph - LfP) * (Lf / (loop - LfP)); z = -1; h = 0; }
-    const f = at(u); _z.copy(f.t); _x.copy(NRM[f.i]); _y.crossVectors(_z, _x).normalize(); if (_y.y < 0) { _y.negate(); _x.negate(); }
+      h = x < 0.55 ? 1 + PHYS.flUp * Math.sin(Math.PI * x / 0.55) : ease(Math.max(0, 1 - (x - 0.55) / 0.45)); out.ghost = x >= 0.55; }
+    else { u = uB - (ph - LfP) * (Lf / (loop - LfP)); z = -1; h = 0; out.ghost = true; }
+    const f = at(u); _z.copy(f.t); _x.copy(f.x).addScaledVector(_z, -f.x.dot(_z)).normalize(); _y.crossVectors(_z, _x).normalize(); if (_y.y < 0) { _y.negate(); _x.negate(); }
     const lift = z > 0 ? -DEPTH + h * (DEPTH + half.y - 0.02) : -DEPTH; // continuous all the way round: no kinematic teleports
     out.pos.copy(f.p).addScaledVector(_y, lift); _m.makeBasis(_x, _y, _z); out.q.setFromRotationMatrix(_m); out.up = h; return out;
   }
@@ -812,9 +838,9 @@ if (LIFT && floorMeshes.length) liftMech = (() => {
   const pads = [];
   for (let k = 0; k < nP; k++) {
     const body = world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased());
-    world.createCollider(RAPIER.ColliderDesc.cuboid(half.x, half.y, half.z).setFriction(0.3).setRestitution(0.05), body);
+    const col = world.createCollider(RAPIER.ColliderDesc.cuboid(half.x, half.y, half.z).setFriction(0.3).setRestitution(0.05), body);
     const g = new THREE.Group(); const box = new THREE.Mesh(padGeo, blackM); const cap = new THREE.Mesh(capGeo, redM); cap.position.y = half.y; g.add(box, cap); scene.add(g);
-    pads.push({ body, g, o: { pos: new THREE.Vector3(), q: new THREE.Quaternion() } });
+    pads.push({ body, g, col, ghost: false, o: { pos: new THREE.Vector3(), q: new THREE.Quaternion() } });
   }
   // housing: dark side cheeks along the ramp + drums at both ends + under-belt band (visual only; rails stay the colliders)
   const cheekPts = []; for (let u = uA; u <= uB; u += 1) cheekPts.push(at(u));
@@ -832,7 +858,8 @@ if (LIFT && floorMeshes.length) liftMech = (() => {
     pads, uA, uB, nP, Lf,
     step(t) {
       if (race.phase === 'race' || race.phase === 'done') off = t - race.t;
-      for (let k = 0; k < nP; k++) { const o = pose((((t * PHYS.liftV + k * PHYS.pitch) % loop) + loop) % loop, pads[k].o); pads[k].body.setNextKinematicTranslation(o.pos); pads[k].body.setNextKinematicRotation(o.q); }
+      for (let k = 0; k < nP; k++) { const o = pose((((t * PHYS.liftV + k * PHYS.pitch) % loop) + loop) % loop, pads[k].o); pads[k].body.setNextKinematicTranslation(o.pos); pads[k].body.setNextKinematicRotation(o.q);
+        if (pads[k].ghost !== o.ghost) { pads[k].col.setSensor(o.ghost); pads[k].ghost = o.ghost; } } // Claude T-031: after the toss the sinking paddle is a ghost, so it can't pinch a marble against the crest deck (200-300 u/s kicks)
     },
     draw(t) {
       const tt = view.mode === 'replay' ? t + off : t;
@@ -890,6 +917,7 @@ function packSpread(c) { let r = 0; for (const m of standings().slice(0, 6)) r =
 const cutLog = []; let lastCutTs = -1e9;
 const TV_MIN_HOLD = 5.0; // look pass 3 v2: hard floor between live TV cuts (was 3.2 s); shots run 5-8 s
 function shotTV(dt, now, fk = follow) {
+  if (typeof TV5 !== 'undefined' && TV5.on && view.mode === 'live') return tv5Shot(dt, now, fk); // AD TV cam v5 hook (block at the end of the file)
   const ts = now / 1000;
   let sh = dir.shot;
   if (sh) {
@@ -914,6 +942,7 @@ function shotTV(dt, now, fk = follow) {
   return { pos, look, fov, kPos: st.type === 'jib' || st.type === 'over' ? 99 : 99, kLook: 3.2, kFov: 0.9 };
 }
 function shotBlimp(dt, now, fk = follow) {
+  if (typeof adBlimpShot === 'function') return adBlimpShot(dt, now, fk); // AD TV r4: one long-lens blimp shot for the Blimp button, the TV director and the replay
   const f = BL.focus.clone(); if (fk >= 0) f.lerp(marbles[fk].mesh.position, 0.6);
   const wp = blimp ? gondolaMount.getWorldPosition(new THREE.Vector3()) : BL.pos.clone();
   const dist = wp.distanceTo(f), spread = packSpread(BL.focus);
@@ -977,7 +1006,7 @@ function buildReplay() {
 }
 function startReplay() {
   if (rec.n < 10) return showResults();
-  view.mode = 'replay'; view.segs = buildReplay(); view.si = -1; nextSeg(); sfx.replaySting();
+  view.mode = 'replay'; view.segs = typeof adCelebrateSegs === 'function' ? adCelebrateSegs(buildReplay()) : buildReplay(); /* AD celebration hook */ view.si = -1; nextSeg(); sfx.replaySting();
   $('rp').classList.remove('hidden'); $('hud').classList.add('hidden'); $('results').classList.add('hidden');
   banner('', 0); $('banner').classList.add('hidden');
 }
@@ -1025,8 +1054,10 @@ function startPodium() {
   $('rpCap').textContent = 'PODIUM'; $('rpSpeed').textContent = ''; $('rpBadge').classList.add('hidden');
   sfx.roar(0.2, 6); confetti(podTops[0].clone().add(new THREE.Vector3(0, 9, 0)), 400);
   view.podTop = top;
+  adPodiumStart(top); // AD celebration hook
 }
 function podiumFrame(dt, now) {
+  if (adPodiumFrame(dt, now)) return; // AD celebration hook
   detachCam();
   view.podT += dt;
   const top = view.podTop;
@@ -1189,6 +1220,7 @@ function frame(now) {
   if (window.__camLog) { const w = camera.getWorldPosition(new THREE.Vector3()), d = camera.getWorldDirection(new THREE.Vector3()); window.__camLog.push([+(now / 1000).toFixed(3), w.x, w.y, w.z, d.x, d.y, d.z, camera.fov]); }
   adSumoTick(); // AD T-030b: mini rikishi stay upright
   sfx.update(dt, camera, marbles, view.mode); // AD T-027: roll loop, clicks, rail hits, fling whoosh, listener = camera
+  adTown.setCamera(camera); adTown.update(dt, now / 1000); // AD critic pass 1
   renderer.render(scene, camera);
   frames++; fpsT += dt;
   if (fpsT > 1) {
@@ -1220,3 +1252,638 @@ window.__dh = {
   setPlayers: (ps) => { session.players = ps; session.save(); buildPicker(); },
 };
 if (Q.get('auto')) startRace();
+
+// ======================================================================================================
+// ---------- AD TV CAM v5 "broadcast director" (Art Director, 11-14, Jarod: "the TV cameras need to be impressive") ----------
+// Self-contained block (functions + one hook line at the top of shotTV). Shots hold 5-8 s, never flicker, and MOVE inside the
+// shot: tracking dollies on a virtual rail beside the deck, rail-level cams, cranes, a lift-top cam for the fling, an orbit
+// around the corkscrew, long-lens stations, and an automatic side-on finish cam on the last lap with a short live slow-mo.
+// Shot choice follows the drama (battle for the lead > player battles > leader; set pieces coming up next get the cut).
+// Camera shake and an FOV punch on drops are smooth (sine noise, no per-frame random). Lower-thirds + letterbox in DH colours,
+// text only (official wordmark text "DAMN HOMIE" as already used by the wipe; no new logos). ?tv5=0 = old v4 director.
+// ======================================================================================================
+const TV5 = { on: Q.get('tv5') !== '0', shot: null, cp: new THREE.Vector3(), cl: new THREE.Vector3(), snap: true, log: [], lastCut: -1e9, shake: 0, punch: 0, slowUntil: 0, slowDone: false, finishLocked: false, lastType: '', lastTypes: [], ui: null };
+const tv5PieceS = (name) => { const p = PIECES.find((x) => x[0] === name); return p ? { s0: sOfRawIdx(p[1]), s1: sOfRawIdx(p[2]) } : null; };
+const TV5P = { lift: tv5PieceS('CHAIN LIFT'), cork: tv5PieceS('CORKSCREW'), drop: tv5PieceS('THE DROP'), narrow: tv5PieceS('THE NARROW'), sweeper: tv5PieceS('SWEEPER'), dohyo: tv5PieceS('DOHYO HAIRPIN') };
+const tv5HelixR = (() => { if (rawPts.length !== 383) return 0; let r = 0, n = 0; for (let k = 192; k <= 262; k++) { r += Math.hypot(rawPts[k].x - helixC.x, rawPts[k].z - helixC.z); n++; } return r / n; })();
+const tv5Y = new THREE.Vector3(0, 1, 0);
+function tv5Frame(s) { const { p, i } = pointAtS(s); return { p, i, t: T[i], n: NRM[i], hw: HW[i] }; }
+function tv5Speed(k) { const v = marbles[k].body.linvel(); return Math.hypot(v.x, v.y, v.z); }
+function tv5Ahead(s0, s1) { return ((s1 - s0) % L + L) % L; } // distance from s0 forward to s1
+function tv5OK(pos, target) { return !insideAny(pos) && visibleT(pos, target); }
+function tv5ClearOfDeck(pos) { for (let j = 0; j < N; j += 2) { const q = P[j]; if (Math.hypot(q.x - pos.x, q.z - pos.z) < HW[j] + 0.5 && Math.abs(q.y - pos.y) < 2.2) return false; } return true; }
+function tv5Subject(fk) { // drama-driven subject, locked for the whole shot
+  if (fk >= 0) return { k: fk, k2: race.battle && (race.battle.a === fk || race.battle.b === fk) ? (race.battle.a === fk ? race.battle.b : race.battle.a) : -1, why: 'follow' };
+  const st = standings(), lead = st[0], moving = (k) => tv5Speed(k) > 8;
+  if (lead.finished) { const un = st.filter((x) => !x.finished); if (un.length) return { k: un[0].k, k2: un[1] && gapSec(un[0], un[1]) < 0.8 ? un[1].k : -1, why: 'chasers' }; } // AD TV r3: after the flag, cover the chasers
+  const finalLap = !lead.finished && lead.lap >= LAPS - 1;
+  if (st[1] && !lead.finished && gapSec(lead, st[1]) < 0.35) return { k: st[1].k, k2: lead.k, why: 'lead' };
+  if (race.battle && race.battle.posn <= 1) return { k: race.battle.b, k2: race.battle.a, why: 'lead' };
+  if (finalLap) return { k: lead.k, k2: st[1] && gapSec(lead, st[1]) < 0.8 ? st[1].k : -1, why: 'leader' };
+  if (race.battle && (session.byMarble(race.battle.a) || session.byMarble(race.battle.b)) && moving(race.battle.a)) return { k: race.battle.b, k2: race.battle.a, why: 'player' };
+  if (race.battle && race.battle.posn <= 4 && moving(race.battle.a) && Math.random() < 0.5) return { k: race.battle.b, k2: race.battle.a, why: 'battle' };
+  return { k: lead.k, k2: -1, why: 'leader' };
+}
+function tv5EstToFlag(k) { // seconds until the leader takes the flag (final lap only)
+  const m = marbles[k]; const rem = LAPS * L - m.prog; const avg = m.lapTimes.length ? L / m.lapTimes[m.lapTimes.length - 1] : 30;
+  return rem / Math.max(8, 0.5 * avg + 0.5 * tv5Speed(k));
+}
+// ---- shot builders: each returns { type, name, dur, ... } or null when no clean angle exists ----
+function tv5BuildTracking(sub) { // camera rides a virtual dolly rail beside the deck at pack speed
+  const s = marbles[sub.k].pr.s, v = Math.max(10, tv5Speed(sub.k));
+  for (const side of [1, -1]) for (const [off, h] of [[3.2, 2.0], [4.5, 3.2], [2.4, 1.3]]) {
+    let ok = true;
+    for (let u = 0; u <= 1.001 && ok; u += 0.2) { const f = tv5Frame(s + v * 6.5 * u - 2), pos = f.p.clone().addScaledVector(f.n, side * (f.hw + off)).addScaledVector(tv5Y, h); if (!tv5OK(pos, f.p.clone().addScaledVector(f.t, 2).add(new THREE.Vector3(0, 0.5, 0))) || !tv5ClearOfDeck(pos)) ok = false; }
+    if (ok) return { type: 'track', name: 'TV · TRACKING DOLLY', side, off, h, sc: s - 2, dur: 5.5 + Math.random() * 2.5 };
+  }
+  return null;
+}
+function tv5BuildRail(sub, sFixed) { // rail-level cam: lens 0.5 u above the deck just outside the rail, pack rushes past
+  const v = Math.max(10, tv5Speed(sub.k)), s = sFixed ?? marbles[sub.k].pr.s + v * 2.8;
+  for (const side of [-1, 1]) { const f = tv5Frame(s), pos = f.p.clone().addScaledVector(f.n, side * (f.hw + 0.9)).addScaledVector(tv5Y, 0.55);
+    const back = tv5Frame(s - 10).p.add(new THREE.Vector3(0, 0.4, 0)); if (tv5OK(pos, back) && tv5OK(pos, f.p.clone().add(new THREE.Vector3(0, 0.4, 0)))) return { type: 'rail', name: 'TV · RAIL CAM', pos, f, side, dur: 5 + Math.random() * 2 }; }
+  return null;
+}
+function tv5BuildCrane(sub) { // crane: starts at deck level, rises 10 u while pulling out
+  const v = Math.max(10, tv5Speed(sub.k)), s = marbles[sub.k].pr.s + v * 1.8;
+  for (const side of [1, -1]) { const f = tv5Frame(s); const a = f.p.clone().addScaledVector(f.n, side * (f.hw + 4)).addScaledVector(tv5Y, 2.6), b = f.p.clone().addScaledVector(f.n, side * (f.hw + 8)).addScaledVector(tv5Y, 11);
+    const tgt = f.p.clone().add(new THREE.Vector3(0, 0.4, 0)), sp = marbles[sub.k].mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0)); if (tv5OK(a, tgt) && tv5OK(b, tgt) && tv5OK(a.clone().lerp(b, 0.5), tgt) && tv5ClearOfDeck(a) && visibleAll(a, tgt) && visibleAll(a, sp) && visibleAll(a.clone().lerp(b, 0.3), tgt)) return { type: 'crane', name: 'TV · CRANE', a, b, dur: 6 + Math.random() * 2 }; }
+  return null;
+}
+function tv5BuildLiftTop(sub) { // beside the head drum, looking down the lift; follows the fling and the landing
+  if (!LIFT) return null;
+  for (const side of [1, -1]) for (const [ds, off, h] of [[3, 3.5, 3.5], [6, 4.5, 5], [0, 5, 6]]) { const f = tv5Frame(LIFT.s1 + ds); const pos = f.p.clone().addScaledVector(f.n, side * (f.hw + off)).addScaledVector(tv5Y, h);
+    if (tv5OK(pos, tv5Frame(LIFT.s1 - 14).p.add(new THREE.Vector3(0, 0.5, 0))) && tv5OK(pos, tv5Frame(LIFT.s1 + 10).p.add(new THREE.Vector3(0, 0.5, 0))) && visibleAll(pos.clone(), marbles[sub.k].mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0)))) return { type: 'lift', name: 'TV · LIFT TOP · THE FLING', pos, dur: 7 + Math.random() };
+  }
+  return null;
+}
+function tv5BuildOrbit(sub) { // slow orbit outside the corkscrew helix, tracking the subject's height
+  if (!tv5HelixR) return null; const m = marbles[sub.k]; const a0 = Math.atan2(m.mesh.position.z - helixC.z, m.mesh.position.x - helixC.x);
+  for (const [dr, dir] of [[9, 1], [11, 1], [9, -1], [7, 1]]) { const r = tv5HelixR + dr; let ok = true;
+    for (let u = 0; u <= 1.001 && ok; u += 0.25) { const a = a0 - 0.7 * dir + dir * u * 1.3; const pos = new THREE.Vector3(helixC.x + Math.cos(a) * r, m.mesh.position.y + 4 - u * 3, helixC.z + Math.sin(a) * r); if (!tv5ClearOfDeck(pos) || insideAny(pos) || !visibleT(pos, helixC.clone().setY(pos.y - 1))) ok = false; }
+    if (ok) return { type: 'orbit', name: 'TV · CORKSCREW ORBIT', a0: a0 - 0.7 * dir, dir, r, y: m.mesh.position.y + 4, dur: 7 + Math.random() };
+  }
+  return null;
+}
+function tv5BuildStation(sub) { // long-lens / pan / overhead stations of the v4 rig, with a slow zoom drift
+  const n = cutTV(sub, performance.now() / 1000); if (!n) return null;
+  { const sp = marbles[sub.k].mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0)), ah = tv5Frame(marbles[sub.k].pr.s + Math.max(10, tv5Speed(sub.k)) * 1.5).p.add(new THREE.Vector3(0, 0.4, 0)); if (!TV5.relax && (!visibleAll(n.st.pos.clone(), sp) || !visibleAll(n.st.pos.clone(), ah))) return null; } // subject must be in clear sight now and 1.5 s on
+  return { type: 'station', name: '', st: n.st, zoom: n.zoom, dur: n.st.type === 'gantry' ? 5.2 : 5.5 + Math.random() * 2.5 };
+}
+const tv5FinCam = (() => { // live finish cam: inside the rail corridor 8 u past the line, 2.4 u up over the outer rail, looking back at the line
+  // (F1-style finish-line angle: the pack runs at the lens and across the line). Inside the corridor nothing stands between lens and line:
+  // the gantry legs, pennant poles and trees are all outside the rails (raycasts against the glb miss thin poles, so no guessing).
+  const { p, i } = pointAtS(SFIN + 8); const side = Q.get('fincamside') === 'l' ? -1 : 1;
+  const c = p.clone().addScaledVector(NRM[i], side * (HW[i] - 0.2)).add(new THREE.Vector3(0, 2.4, 0));
+  console.log('[tv5 fincam]', c.toArray().map((x) => +x.toFixed(1))); return c;
+})();
+function tv5FinishArmed(ld, ts) { // final lap: arm on the time estimate, or always once the leader is inside the last 12 u (overrides a stall block)
+  if (race.phase !== 'race' || ld.finished || ld.lap < LAPS - 1) return false; const rem = LAPS * L - ld.prog;
+  const est = tv5EstToFlag(ld.k); // AD TV r3: arm on time-to-flag too (the v4 track runs a lap in ~12 s, so 'last quarter' came too late)
+  return rem < 12 ? rem > 0 : (rem < 0.25 * L || (est < 9 && rem < 0.45 * L)) && est < 10.5 && !(TV5.finishBlock > ts);
+}
+function tv5BuildFinish(sub) { return { type: 'finish', name: 'TV · PHOTO-FINISH CAM', pos: tv5FinCam.clone(), dur: 8 }; }
+// ---- AD TV r3 (11-14): BLIMP AERIAL in the live director. Lens = the real gondola cam (camera parented to the gondola mount
+// on the moving blimp), only on calm stretches (leader alone, no set piece next, not the final lap), max once per 35 s, 6-7.5 s hold.
+function tv5BlimpOK(sub, ts) {
+  if (!blimp || (sub.why !== 'leader' && sub.why !== 'battle') || race.t < 6 || ts - (TV5.lastBlimp ?? -1e9) < 30) return false;
+  const ld = standings()[0]; if (LAPS > 1 && ld.lap >= LAPS - 1) return false; // the final lap belongs to the battles + the finish cam
+  const wp = gondolaMount.getWorldPosition(new THREE.Vector3()), tp = marbles[sub.k].mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0));
+  const d = wp.distanceTo(tp); return d > 8 && d < 85 && wp.y - tp.y > 6 && visibleT(wp, tp); // must look DOWN on the pack (r4: high blimp, ~46-70 u)
+}
+function tv5BuildBlimp(sub) { return { type: 'blimp', name: 'BLIMP \u00b7 GONDOLA CAM', dur: 6 + Math.random() * 1.5 }; }
+function tv5Pick(sub, ts) {
+  const m = marbles[sub.k], s = m.pr.s, v = Math.max(10, tv5Speed(sub.k));
+  const ld = standings()[0];
+  if (tv5FinishArmed(ld, ts)) { TV5.finishLocked = true; const st = standings(); sub.k = ld.k; sub.k2 = st[1] && gapSec(ld, st[1]) < 1 ? st[1].k : -1; sub.why = 'finish'; return tv5BuildFinish(sub); }
+  if (tv5BlimpDue(sub, ts)) return tv5BuildBlimp(sub); // AD TV r4: at least one aerial per race
+  const soon = (pc, sec) => pc && tv5Ahead(s, pc.s0) < v * sec;
+  const inside = (pc) => pc && tv5Ahead(pc.s0, s) < pc.s1 - pc.s0;
+  const tries = [];
+  if (inside(TV5P.lift) && LIFT && tv5Ahead(s, LIFT.s1) > 6 && tv5Ahead(s, LIFT.s1) < 16 * 7) tries.push(tv5BuildLiftTop); // ~5-7 s of climb left at belt speed
+  if (soon(TV5P.cork, 3) || (inside(TV5P.cork) && tv5Ahead(s, TV5P.cork.s1) > v * 4)) tries.push(tv5BuildOrbit);
+  if (soon(TV5P.drop, 3.5)) tries.push((x) => tv5BuildRail(x, TV5P.drop.s1 - 4));
+  if (soon(TV5P.narrow, 3)) tries.push((x) => tv5BuildRail(x, (TV5P.narrow.s0 + TV5P.narrow.s1) / 2));
+  if (tv5BlimpOK(sub, ts)) tries.push(tv5BuildBlimp); // AD TV r3: calm stretch -> blimp aerial
+  const rot = sub.why === 'lead' || sub.why === 'battle' ? [tv5BuildTracking, tv5BuildStation, tv5BuildRail, tv5BuildCrane] : [tv5BuildTracking, tv5BuildCrane, tv5BuildStation, tv5BuildRail, tv5BuildStation];
+  rot.sort(() => Math.random() - 0.5);
+  for (const f of rot) tries.push(f);
+  for (const f of tries) { const sh = f(sub); if (sh && (sh.type !== TV5.lastType || tries.length < 2) && !(TV5.lastTypes.slice(-2).filter((t) => t === sh.type).length >= 2)) return sh; }
+  for (const f of tries) { const sh = f(sub); if (sh) return sh; }
+  return null;
+}
+function tv5Cut(fk, ts) {
+  const sub = tv5Subject(fk); let sh = tv5Pick(sub, ts);
+  if (!sh && TV5.shot && ts - TV5.shot.t0 > TV5.shot.dur + 0.5) { TV5.relax = true; sh = tv5Pick(sub, ts); TV5.relax = false; } // never overstay 8 s: relax the sight-line gate
+  if (!sh && TV5.shot && ts - TV5.shot.t0 > TV5.shot.dur + 1 && blimp) { sh = tv5BuildBlimp(sub); sh.dur = 6.5; } // AD TV r3: still nothing clean -> blimp aerial (helicopter-style), never a frozen shot
+  if (!sh) return null;
+  if (sh.type !== 'finish') { const ld = standings()[0]; if (race.phase === 'race' && !ld.finished && ld.lap >= LAPS - 1) { const est = tv5EstToFlag(ld.k); if (est < sh.dur + 2.5) sh.dur = Math.max(TV_MIN_HOLD, est - 2.5); } } // AD TV r3: end this shot ~2.5 s before the flag so the finish cam gets the line
+  Object.assign(sh, { k: sub.k, k2: sub.k2, why: sub.why, t0: ts });
+  if (sh.type === 'blimp') { TV5.lastBlimp = ts; TV5.blimpDone = true; } // AD TV r3/r4
+  TV5.shot = sh; TV5.lastCut = ts; TV5.snap = true; TV5.lastType = sh.type; TV5.lastTypes.push(sh.type); if (TV5.lastTypes.length > 6) TV5.lastTypes.shift();
+  cutLog.push(+ts.toFixed(2)); if (cutLog.length > 400) cutLog.shift();
+  TV5.log.push({ t: +ts.toFixed(2), rt: +race.t.toFixed(2), type: sh.type, dur: +sh.dur.toFixed(2), k: sub.k, why: sub.why, lap: marbles[sub.k].lap + 1, piece: pieceAt(marbles[sub.k].pr.s) }); if (TV5.log.length > 400) TV5.log.shift();
+  tv5LowerThird(sh); return sh;
+}
+function tv5Shot(dt, now, fk = follow) {
+  if (race.t + 0.5 < (TV5.raceT ?? 0)) tv5Reset(); TV5.raceT = race.t; // new race
+  const ts = now / 1000; let sh = TV5.shot;
+  const held = sh ? ts - sh.t0 : 1e9;
+  if (sh && sh.type === 'finish' && held >= sh.dur - 0.05) { // hold the finish cam while the leader is on the run-in or just crossed; otherwise release it
+    const ld = standings()[0], w = race.finishOrder[0];
+    if (!sh.pt || ts - sh.pt > 3) { sh.adv = sh.pt ? ld.prog - sh.pp : 99; sh.pp = ld.prog; sh.pt = ts; } // leader progress over the last ~3 s
+    if ((race.phase === 'race' && !w && LAPS * L - ld.prog < 45 && sh.adv > 2.5) || (race.phase === 'race' && !w && LAPS * L - ld.prog < 30 && sh.dur < 14) || (w && race.t - w.finishTime < 5)) sh.dur += 1; // AD TV r3: leader stuck < 30 u from the flag = stay on the line (max 14 s)
+    else if (race.phase === 'race') { TV5.finishLocked = false; TV5.finishBlock = ts + 6; } /* AD TV r3: block re-arm for one shot only (was 600 s, which missed the real finish after a stall) */ // stalled on the run-in: go cover the struggle, re-arm only inside the last 12 u
+  }
+  if (sh && sh.type !== 'finish') { const m = marbles[sh.k]; const lead = standings()[0]; // early end only after 5 s: subject gone, or the last-lap finish window opened
+    const lastLap = !TV5.finishLocked && tv5FinishArmed(lead, ts);
+    sh.occT = (sh.occT || 0) + dt; if (sh.occT > 0.4) { sh.occT = 0; sh.blocked = sh.type !== 'rail' && sh.type !== 'blimp' && (!visibleAll(camera.position.clone(), m.mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0))) || (camera.position.distanceTo(TV5.cl) > 3 && !visibleAll(camera.position.clone(), TV5.cl.clone()))) ? (sh.blocked || 0) + 0.4 : 0; } /* subject or the aim point hidden behind scenery */ // subject hidden behind scenery
+    const lost = (sh.type === 'blimp' ? camera.getWorldPosition(new THREE.Vector3()) : camera.position).distanceTo(m.mesh.position) > 75 || (sh.blocked || 0) > 0.8;
+    sh.lostT = lost ? (sh.lostT || 0) + dt : 0;
+    const atLine = !TV5.finishLocked && race.phase === 'race' && !lead.finished && lead.lap >= LAPS - 1 && LAPS * L - lead.prog < 14 && LAPS * L - lead.prog > 0; // AD TV r3: leader ~1 s from the flag
+    if ((held >= TV_MIN_HOLD && (sh.lostT > 0.6 || lastLap)) || (atLine && held >= 3)) { sh = null; if (atLine) TV5.finishNow = true; } // the one allowed early cut per race: never miss the line
+  }
+  if (!sh || held >= sh.dur) { if (!TV5.shot || ts - TV5.lastCut >= TV_MIN_HOLD || TV5.finishNow) { TV5.finishNow = false; sh = tv5Cut(fk, ts) || TV5.shot; } else sh = TV5.shot; }
+  if (!sh) return null;
+  const u = THREE.MathUtils.clamp((ts - sh.t0) / sh.dur, 0, 1), e = u * u * (3 - 2 * u);
+  const look = lookTarget(sh.k, sh.k2), m = marbles[sh.k];
+  if (sh.type === 'blimp') { /* AD TV r4: high blimp, long lens, gondola-edge reveal */ if (ts - sh.t0 < 0.05) camSnap = true; const r = adBlimpShot(dt, now, sh.k, ts - sh.t0); const pc = pieceAt(m.pr.s); shotName = 'BLIMP \u00b7 AERIAL' + (pc ? ' \u00b7 ' + pc : ''); TV5.snap = true; tv5UI(true); return r; }
+  let pos, fov = 45, kp = 3, kl = 4.5;
+  if (sh.type === 'track') { const lv = m.body.linvel(), va = lv.x * m.pr.tan.x + lv.y * m.pr.tan.y + lv.z * m.pr.tan.z; sh.sc += Math.max(0, va) * dt + wrap(m.pr.s - 2.2 - sh.sc) * Math.min(1, dt * 1.5); // dolly runs at pack speed + gentle correction (no lag)
+    const f = tv5Frame(sh.sc); pos = f.p.clone().addScaledVector(f.n, sh.side * (f.hw + sh.off)).addScaledVector(tv5Y, sh.h + Math.sin(u * Math.PI) * 0.6); fov = 46 - e * 8; kp = 5; }
+  else if (sh.type === 'rail') { pos = sh.pos.clone().addScaledVector(sh.f.t, e * 1.4); fov = 54 - e * 8; kp = 99; }
+  else if (sh.type === 'crane') { pos = sh.a.clone().lerp(sh.b, e); fov = THREE.MathUtils.clamp(420 / (pos.distanceTo(look) + 5), 24, 46); kp = 99; }
+  else if (sh.type === 'lift') { pos = sh.pos.clone().add(new THREE.Vector3(0, e * 2.5, 0)); fov = THREE.MathUtils.clamp(520 / (pos.distanceTo(look) + 6), 30, 55); kp = 99; kl = 3.2; }
+  else if (sh.type === 'orbit') { const a = sh.a0 + sh.dir * e * 1.3; const y = THREE.MathUtils.lerp(sh.y, m.mesh.position.y + 3.5, 0.5) - e * 1.5; pos = new THREE.Vector3(helixC.x + Math.cos(a) * sh.r, y, helixC.z + Math.sin(a) * sh.r); fov = THREE.MathUtils.clamp(560 / (pos.distanceTo(look) + 6), 30, 52); kp = 3; }
+  else if (sh.type === 'finish') { pos = sh.pos.clone(); const fp = P[FIN].clone().add(new THREE.Vector3(0, 0.4, 0)); const d = m.mesh.position.distanceTo(fp); const w = THREE.MathUtils.clamp(1 - d / 30, 0, 1); if (m.finished) { const nx = standings().find((x) => !x.finished); if (nx) look.copy(lookTarget(nx.k, -1)); look.lerp(fp, 0.55); } else look.lerp(fp, 0.3 + 0.4 * w); /* after the flag: hold the line for the chasers, like F1 TV does */ const dc = pos.distanceTo(look); fov = THREE.MathUtils.clamp(THREE.MathUtils.radToDeg(2 * Math.atan((2.5 + Math.min(d, 40) * 0.35) / dc)), m.finished ? 40 : 22, 55); kl = 4; tv5FinishSlowMo(m); }
+  else { const st = sh.st, dist = st.pos.distanceTo(look); pos = st.pos.clone(); fov = st.type === 'tele' ? THREE.MathUtils.clamp(700 / (dist + 4) * sh.zoom, 12, 34) * (1 - 0.08 * e) : st.type === 'jib' ? 42 - e * 8 : THREE.MathUtils.clamp(560 / (dist + 6), 20, 55) * (1 - 0.06 * e);
+    if (st.type === 'jib') { pos.y = P[st.i].y + 1.5 + e * 8; pos.addScaledVector(T[st.i], (e - 0.5) * 5); } if (st.type === 'over') pos.addScaledVector(T[st.i], (u - 0.5) * 4); kp = 99; sh.name = 'TV · ' + ({ tele: 'LONG LENS', low: 'LOW', jib: 'JIB', pan: 'PAN', gantry: 'GANTRY', mast: 'MAST CAM', over: 'OVERHEAD' }[st.type] || st.type.toUpperCase()); }
+  // drama FX: smooth shake + FOV punch while the subject drops or slams a bank (sine noise, never per-frame random)
+  const vy = m.body.linvel().y; const want = THREE.MathUtils.clamp((-vy - 18) / 50, 0, 1) * (sh.type === 'finish' ? 0.3 : 1);
+  TV5.shake += (want - TV5.shake) * Math.min(1, dt * (want > TV5.shake ? 6 : 1.5)); TV5.punch += (want * 7 - TV5.punch) * Math.min(1, dt * (want * 7 > TV5.punch ? 5 : 1.2));
+  const amp = TV5.shake * Math.min(0.18, 0.012 * pos.distanceTo(look)), tt = now * 0.001;
+  const shk = new THREE.Vector3(Math.sin(tt * 23.1) + 0.5 * Math.sin(tt * 37.7), Math.sin(tt * 19.3 + 1) + 0.5 * Math.sin(tt * 41.3), Math.sin(tt * 29.9 + 2)).multiplyScalar(amp);
+  const piece = pieceAt(m.pr.s); shotName = (sh.name || 'TV') + (piece && !/FINISH CAM|FLING|CORKSCREW/.test(sh.name) ? ' · ' + piece : '') + (TV5.slowUntil > now ? ' · SLOW-MO' : '');
+  // lead-compensate the look target by the smoothing lag (v / k), so 60 u/s marbles stay in frame on long lenses
+  { const lv = m.body.linvel(); const lead = sh.type === 'orbit' || sh.type === 'finish' ? 0 : Math.min(1 / kl, 0.4); /* no chord lead inside the helix */ look.x += lv.x * lead; look.y += lv.y * lead * 0.5; look.z += lv.z * lead; }
+  if (sh.type === 'station' && sh.st.type === 'tele') kl = 6; if (sh.type === 'orbit') kl = 7;
+  // own smoothing so shake reaches the lens (applyShot gets kPos/kLook 99)
+  if (TV5.snap) { TV5.cp.copy(pos); TV5.cl.copy(look); TV5.snap = false; }
+  else { TV5.cp.lerp(pos, kp >= 99 ? 1 : 1 - Math.exp(-dt * kp)); TV5.cl.lerp(look, 1 - Math.exp(-dt * kl)); }
+  tv5UI(true);
+  return { pos: TV5.cp.clone(), look: TV5.cl.clone().add(shk), fov: fov + TV5.punch, kPos: 99, kLook: 99, kFov: sh.type === 'finish' ? 2 : 1.4 };
+}
+function tv5FinishSlowMo(m) { // live slow-mo as the leader takes the flag, only when it's close (P2 within ~0.6 s)
+  const now = performance.now();
+  if (TV5.slowUntil && now > TV5.slowUntil) { PHYS.ts = TV5.tsBase ?? 1; TV5.slowUntil = 0; tv5Tag(''); }
+  if (TV5.slowDone || race.phase !== 'race') return;
+  const st = standings(), a = st[0], b = st[1]; if (!b) return;
+  const toLine = LAPS * L - a.prog;
+  if (toLine < 9 && toLine > 0 && gapSec(a, b) < 0.6) { TV5.slowDone = true; TV5.tsBase = PHYS.ts; PHYS.ts = 0.3 * TV5.tsBase; TV5.slowUntil = now + 2200; tv5Tag('PHOTO FINISH'); sfx.roar?.(0.16, 2.5); }
+}
+// ---- broadcast UI: letterbox + lower-third (DH red / black / white, text only) ----
+function tv5UIInit() {
+  if (TV5.ui) return TV5.ui;
+  const css = document.createElement('style'); css.id = 'tv5css';
+  css.textContent = `#tv5lb{position:absolute;inset:0;pointer-events:none;z-index:0}#tv5lb i{position:absolute;left:0;right:0;height:0;background:#07040c;transition:height .6s ease}#tv5lb i:first-child{top:0}#tv5lb i:last-child{bottom:0}
+#tv5lb.on i{height:6.5vh}@media (orientation:portrait){#tv5lb.on i{height:3vh}}
+#tv5lt{position:absolute;left:max(10px,env(safe-area-inset-left));bottom:calc(max(12px,env(safe-area-inset-bottom)) + 150px);display:flex;align-items:stretch;transform:translateX(-120%);transition:transform .45s cubic-bezier(.2,.9,.2,1);pointer-events:none;font-style:italic;text-transform:uppercase}
+#tv5lt.on{transform:none}#tv5lt .pos{background:#fff;color:#e0102f;font-weight:900;font-size:22px;padding:4px 10px;display:flex;align-items:center}#tv5lt .bd{background:linear-gradient(90deg,#111 0,#1d1424 100%);border-left:4px solid #e0102f;padding:4px 14px 5px}
+#tv5lt .nm{font-weight:900;font-size:18px;letter-spacing:.5px;color:#fff;line-height:1.1}#tv5lt .sub{font-weight:800;font-size:11px;letter-spacing:1.5px;color:#ffb300}#tv5lt .ball{width:30px;height:30px;border-radius:50%;background-size:cover;margin:auto 8px auto 0;box-shadow:0 0 0 2px #fff}
+#tv5lt .wm{align-self:flex-end;background:#e0102f;color:#fff;font-weight:900;font-size:9px;letter-spacing:2px;padding:2px 6px}
+#tv5tag{position:absolute;left:50%;top:calc(max(8px,env(safe-area-inset-top)) + 8vh);transform:translateX(-50%);background:#e0102f;color:#fff;font-weight:900;font-style:italic;letter-spacing:3px;padding:4px 14px;font-size:15px;pointer-events:none;box-shadow:3px 3px 0 #000}
+#tv5tag:empty{display:none}@media (max-width:600px){#tv5lt{bottom:calc(max(12px,env(safe-area-inset-bottom)) + 170px)}#tv5lt .nm{font-size:14px}#tv5lt .pos{font-size:17px}}`;
+  document.head.appendChild(css);
+  const lb = document.createElement('div'); lb.id = 'tv5lb'; lb.innerHTML = '<i></i><i></i>';
+  const lt = document.createElement('div'); lt.id = 'tv5lt'; lt.innerHTML = '<div class="pos"></div><div class="bd"><div class="nm"></div><div class="sub"></div></div><div class="wm">DAMN HOMIE · OSAKA GP</div>';
+  const tag = document.createElement('div'); tag.id = 'tv5tag';
+  const hud = $('hud'); hud.prepend(lb); hud.appendChild(lt); hud.appendChild(tag);
+  TV5.ui = { lb, lt, tag }; return TV5.ui;
+}
+function tv5Tag(t) { tv5UIInit().tag.textContent = t; }
+function tv5UI(on) { const u = tv5UIInit(); u.lb.classList.toggle('on', !!on); if (!on) u.lt.classList.remove('on'); }
+function tv5LowerThird(sh) {
+  const u = tv5UIInit(), st = standings(), m = marbles[sh.k], pos = st.indexOf(m) + 1, p = session.byMarble(m.k);
+  let nm = m.name + (p ? ' · ' + p.name : ''), sub = ($('lap').textContent || '').trim() || `LAP ${Math.min(LAPS, Math.max(1, Math.floor(st[0].prog / L) + 1))}/${LAPS}`; // AD TV r4: the HUD's own lap text verbatim (kept in sync by a MutationObserver), so they can never disagree
+  if (sh.k2 >= 0) { const o = marbles[sh.k2], po = st.indexOf(o) + 1; nm = `${o.name} vs ${m.name}`; sub = `BATTLE FOR P${Math.min(po, pos)} · GAP ${gapSec(st[Math.min(po, pos) - 1], st[Math.max(po, pos) - 1]).toFixed(2)}s · ` + sub; }
+  else if (pos === 1 && st[1]) sub = `LEADS BY ${gapSec(st[0], st[1]).toFixed(2)}s · ` + sub;
+  if (sh.type === 'blimp') sub = 'AERIAL \u00b7 DH BLIMP \u00b7 ' + sub; // AD TV r3
+  if (sh.type === 'lift') sub = 'UP THE LIFT · INTO THE FLING · ' + sub;
+  if (sh.type === 'finish') { nm = 'RUN TO THE FLAG'; sub = `FINAL LAP · ${st[0].name} LEADS`; }
+  u.lt.querySelector('.pos').textContent = sh.k2 >= 0 ? 'P' + Math.min(pos, st.indexOf(marbles[sh.k2]) + 1) : 'P' + pos;
+  u.lt.querySelector('.nm').textContent = nm; u.lt.querySelector('.sub').textContent = sub;
+  if (sh.ltRefresh) return; // AD TV r4: live refresh keeps the slide-in timing
+  u.lt.classList.add('on'); clearTimeout(tv5LowerThird.t); tv5LowerThird.t = setTimeout(() => u.lt.classList.remove('on'), 3800);
+}
+function tv5Reset() { TV5.blimpDone = false; TV5.lastBlimp = -1e9; /* AD TV r4 */ TV5.shot = null; TV5.snap = true; TV5.lastCut = -1e9; TV5.slowDone = false; TV5.finishLocked = false; TV5.finishBlock = 0; if (TV5.slowUntil) { PHYS.ts = TV5.tsBase ?? 1; TV5.slowUntil = 0; } if (TV5.ui) { tv5UI(false); tv5Tag(''); } }
+function tv5Tick() { // per frame (via the shotTV hook state): hide broadcast UI when TV is not the live camera
+  if (!TV5.ui) return; const live = view.mode === 'live' && camMode === 0 && (race.phase === 'race' || race.phase === 'done');
+  if (!live && TV5.slowUntil) { PHYS.ts = TV5.tsBase ?? 1; TV5.slowUntil = 0; }
+  if (!live) { TV5.ui.lb.classList.remove('on'); TV5.ui.lt.classList.remove('on'); if (view.mode !== 'live') TV5.ui.tag.textContent = ''; }
+}
+setInterval(tv5Tick, 250);
+if (window.__dh) Object.assign(window.__dh, { tv5Log: () => TV5.log.slice(), tv5: TV5, tv5Reset, tv5FinCam: () => tv5FinCam.toArray(), finLine: () => P[FIN].toArray(), camInfo: () => ({ p: camera.position.toArray().map((x) => +x.toFixed(2)), fov: +camera.fov.toFixed(1), near: camera.near, shot: TV5.shot && TV5.shot.type, cl: TV5.cl.toArray().map((x) => +x.toFixed(2)) }) });
+
+// ======================================================================================================
+// ---------- AD WINNER CELEBRATION v1 (Art Director, 11-14, Jarod: "a big winner celebration") ----------
+// (a) podium scene at the red DH gantry: risers (existing), winner wears a gold crown with a trophy hovering beside it,
+//     bounce + spin, confetti, big fireworks over the castle, crowd swell (sfx.roar -> crowd_finish), one continuous crane/orbit
+//     camera move (no cuts). (b) replay: the decisive move from 3 angles in slow-mo + multi-angle finish, with a broadcast banner.
+// (c) bragging rights: only the winning player gets a 60-char box (light profanity filter); the message shows big for everyone.
+//     Network hook: DHBrag.onSend(payload) (lobby sends it) and DHBrag.receive(payload) (lobby delivers it).
+// (d) "Shop Damn Homie" button on the podium/results screens; hidden while SHOP_URL is empty.
+// Hooks into existing code: startReplay (segments), startPodium (end), podiumFrame (top). Everything else lives here.
+// ======================================================================================================
+const SHOP_URL = ''; // Jarod: put the Damn Homie store link here; empty string hides the button
+const CELEB = { on: Q.get('celeb') !== '0', t: 0, dur: 16, top: null, ui: null, brag: null, holdForBrag: false, castle: null, camA: 0 };
+const celebGold = new THREE.MeshStandardMaterial({ color: 0xffc23a, metalness: 1, roughness: 0.22, emissive: 0x3a2400 });
+const celebRed = new THREE.MeshStandardMaterial({ color: 0xe0102f, metalness: 0.2, roughness: 0.15, emissive: 0x400008 });
+const celebWhite = new THREE.MeshStandardMaterial({ color: 0xf4f1ea, roughness: 0.3 });
+function celebMakeCrown() { // stylized: gold band, 5 points with ball tips, red gems; sized to a 1 u marble
+  const g = new THREE.Group(); const band = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.3, 0.18, 24, 1, true), celebGold); band.material.side = THREE.DoubleSide; g.add(band);
+  for (let i = 0; i < 5; i++) { const a = (i / 5) * Math.PI * 2; const sp = new THREE.Mesh(new THREE.ConeGeometry(0.075, 0.24, 8), celebGold); sp.position.set(Math.cos(a) * 0.32, 0.2, Math.sin(a) * 0.32); g.add(sp);
+    const tip = new THREE.Mesh(new THREE.SphereGeometry(0.04, 8, 6), celebGold); tip.position.set(Math.cos(a) * 0.32, 0.33, Math.sin(a) * 0.32); g.add(tip);
+    const gem = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 6), celebRed); gem.position.set(Math.cos(a + 0.63) * 0.335, 0, Math.sin(a + 0.63) * 0.335); g.add(gem); }
+  g.visible = false; scene.add(g); return g;
+}
+function celebMakeTrophy() { // stylized cup on a two-step plinth (no marks, no brands)
+  const g = new THREE.Group();
+  const cup = new THREE.Mesh(new THREE.LatheGeometry([[0.02, 0], [0.26, 0.04], [0.33, 0.25], [0.34, 0.48], [0.3, 0.5]].map(([x, y]) => new THREE.Vector2(x, y)), 24), celebGold); cup.material.side = THREE.DoubleSide; cup.position.y = 0.55; g.add(cup);
+  for (const s of [-1, 1]) { const h = new THREE.Mesh(new THREE.TorusGeometry(0.13, 0.03, 8, 16, Math.PI), celebGold); h.position.set(s * 0.34, 0.86, 0); h.rotation.z = -s * Math.PI / 2; g.add(h); }
+  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.08, 0.3, 12), celebGold); stem.position.y = 0.4; g.add(stem);
+  const b1 = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.24, 0.1, 16), celebGold); b1.position.y = 0.22; g.add(b1);
+  const b2 = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.18, 0.5), new THREE.MeshStandardMaterial({ color: 0x111014, roughness: 0.4 })); b2.position.y = 0.09; g.add(b2);
+  const strip = new THREE.Mesh(new THREE.BoxGeometry(0.51, 0.04, 0.51), celebRed); strip.position.y = 0.12; g.add(strip);
+  g.visible = false; scene.add(g); return g;
+}
+const celebCrown = celebMakeCrown(), celebTrophy = celebMakeTrophy(); celebTrophy.scale.setScalar(0.8);
+// big fireworks: a second, larger points system so shells read from the podium ~60-90 u away (cheap: one draw call)
+const CFN = 900, cfGeo = new THREE.BufferGeometry(), cfPos = new Float32Array(CFN * 3).fill(-999), cfCol = new Float32Array(CFN * 3), cfVel = new Float32Array(CFN * 3), cfLife = new Float32Array(CFN);
+cfGeo.setAttribute('position', new THREE.BufferAttribute(cfPos, 3)); cfGeo.setAttribute('color', new THREE.BufferAttribute(cfCol, 3));
+const cfPts = new THREE.Points(cfGeo, new THREE.PointsMaterial({ size: 0.9, vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false })); cfPts.frustumCulled = false; scene.add(cfPts);
+let cfHead = 0;
+function celebShell(pos) { const c = BRAND[(Math.random() * BRAND.length) | 0], sp = 7 + Math.random() * 5; for (let j = 0; j < 110; j++) { const i = cfHead; cfHead = (cfHead + 1) % CFN; const u = Math.random() * 2 - 1, th = Math.random() * 6.283, r = Math.sqrt(1 - u * u), s = sp * (0.85 + Math.random() * 0.15); cfPos.set([pos.x, pos.y, pos.z], i * 3); cfVel.set([r * Math.cos(th) * s, u * s, r * Math.sin(th) * s], i * 3); cfCol.set([c.r, c.g, c.b], i * 3); cfLife[i] = 1.6 + Math.random() * 0.8; } sfx.pop?.(); }
+function celebParticles(dt) { for (let i = 0; i < CFN; i++) { if (cfLife[i] <= 0) continue; cfLife[i] -= dt; if (cfLife[i] <= 0) { cfPos[i * 3 + 1] = -999; continue; } const d = Math.exp(-1.3 * dt); cfVel[i * 3] *= d; cfVel[i * 3 + 1] = cfVel[i * 3 + 1] * d - 4 * dt; cfVel[i * 3 + 2] *= d; cfPos[i * 3] += cfVel[i * 3] * dt; cfPos[i * 3 + 1] += cfVel[i * 3 + 1] * dt; cfPos[i * 3 + 2] += cfVel[i * 3 + 2] * dt; } cfGeo.attributes.position.needsUpdate = true; cfGeo.attributes.color.needsUpdate = true; }
+function celebCastleTop() {
+  if (CELEB.castle) return CELEB.castle; let best = null;
+  world3d.traverse((o) => { if (!best && /castle/i.test(o.name) && !/sign|board|ad_/i.test(o.name)) best = o; });
+  const b = best ? new THREE.Box3().setFromObject(best) : null;
+  CELEB.castle = b && isFinite(b.max.y) ? new THREE.Vector3((b.min.x + b.max.x) / 2, b.max.y + 8, (b.min.z + b.max.z) / 2) : center.clone().add(new THREE.Vector3(0, 30, 0)); return CELEB.castle;
+}
+// camera: one continuous move. Starts low and close on the crown, cranes up and swings out so the castle fireworks sit behind the podium.
+function celebCamPos(a0, t) { const e = Math.min(1, t / 9), ee = e * e * (3 - 2 * e); const a = a0 + 0.55 - ee * 0.75 + Math.max(0, t - 9) * 0.03, r = 3.0 + ee * 4.4, h = 0.35 + ee * 2.0; return podC.clone().add(new THREE.Vector3(Math.cos(a) * r, h + podTops[0].y - podC.y, Math.sin(a) * r)); }
+function celebCamPlan() { // the podium stands on the deck 5 u past the line: shoot from further down the straight, back toward the red DH gantry.
+  // Inside the rail corridor nothing stands in front of the lens; the three risers read side by side; the gantry is the backdrop.
+  if (CELEB.planned) return; CELEB.planned = true;
+  const t = T[podIdx]; CELEB.camA = Math.atan2(t.z, t.x);
+  const dir = podTops[0].clone().sub(celebCamPos(CELEB.camA, 9)).setY(0).normalize(); CELEB.trophyOff = new THREE.Vector3(-dir.z, 0, dir.x).multiplyScalar(0.95).add(dir.clone().multiplyScalar(-0.45)); // beside the winner, a touch toward the lens
+  console.log('[celeb] cam angle', CELEB.camA.toFixed(2));
+}
+function celebCam(dt, t) {
+  const c = podTops[0].clone(), e = Math.min(1, t / 9), ee = e * e * (3 - 2 * e);
+  const pos = celebCamPos(CELEB.camA, t);
+  const look = c.clone().add(new THREE.Vector3(0, 0.25 + ee * 1.1, 0)); // tilt up late so the castle fireworks fill the sky above the podium
+  applyShot({ pos, look, fov: 38 + ee * 14, kPos: 99, kLook: 99 }, dt); $('shotTag').textContent = 'PODIUM · CROWN CAM';
+}
+function adPodiumStart(top) { // called at the end of startPodium
+  if (!CELEB.on) return; CELEB.t = 0; CELEB.top = top; CELEB.brag = null; celebCamPlan(); celebCastleTop();
+  celebCrown.visible = celebTrophy.visible = true; sfx.roar?.(0.25, 7);
+  for (let i = 0; i < 5; i++) setTimeout(() => view.mode === 'podium' && celebShell(celebCastleTop().clone().add(new THREE.Vector3((Math.random() - 0.5) * 22, Math.random() * 8, (Math.random() - 0.5) * 22))), 300 + i * 260);
+  celebUI().pod.classList.remove('hidden');
+  const p = session.byMarble(top[0].k); const ui = celebUI();
+  ui.podName.textContent = top[0].name.toUpperCase(); ui.podSub.textContent = p ? `${p.name.toUpperCase()} TAKES THE OSAKA GP` : 'WINS THE OSAKA GRAND PRIX';
+  ui.podList.innerHTML = top.map((m, i) => `<span class="p${i + 1}">${i + 1}. ${m.name}</span>`).join('');
+  CELEB.holdForBrag = !!p || CELEB.forceBrag === true; ui.brag.classList.toggle('hidden', !CELEB.holdForBrag); ui.bragShow.classList.add('hidden');
+  if (CELEB.holdForBrag) { ui.bragWho.textContent = `${(p ? p.name : top[0].name).toUpperCase()}, YOU WON. SAY SOMETHING:`; ui.bragIn.value = ''; }
+  ui.shop.classList.toggle('hidden', !SHOP_URL);
+  $('winTitle').classList.add('hidden');
+}
+function adPodiumFrame(dt, now) { // called at the top of podiumFrame; returns true when it drove the frame
+  if (!CELEB.on || !CELEB.top) return false;
+  detachCam(); CELEB.t += dt; view.podT = CELEB.t; const t = CELEB.t, top = CELEB.top;
+  top.forEach((m, i) => { m.mesh.position.copy(podTops[i]); if (i === 0) { const b = Math.abs(Math.sin(t * 4.2)); m.mesh.position.y += b * 0.55; m.mesh.scale.set(1 + (1 - b) * 0.06, 1 - (1 - b) * 0.08, 1 + (1 - b) * 0.06); m.mesh.rotateY(dt * 3.2); } else m.mesh.rotateY(dt); });
+  const w = top[0].mesh; celebCrown.position.copy(w.position).add(new THREE.Vector3(0, 0.8 * R * w.scale.y + 0.07, 0)); /* AD r4: band rim seated on the sphere (ring r 0.3 meets R 0.5 at 0.4) */ celebCrown.rotation.set(0.12 * Math.sin(t * 2), t * 1.2, 0.1);
+  celebTrophy.position.copy(podTops[0]).add(adTrophyOff()).add(new THREE.Vector3(0, -R + 0.005, 0)); celebTrophy.scale.setScalar(1.0); /* AD r4: stands ON the P1 riser (front corner, away from P2), no float, bigger for phones */ celebTrophy.rotation.y = t * 0.8;
+  top[0].mat.emissive.setScalar(0.22 + 0.12 * Math.sin(now * 0.006));
+  beamMat.opacity = 0.13 + 0.05 * Math.sin(now * 0.004);
+  if (t < 12 && Math.random() < dt * 3) celebShell(celebCastleTop().clone().add(new THREE.Vector3((Math.random() - 0.5) * 26, Math.random() * 10, (Math.random() - 0.5) * 26)));
+  if (Math.random() < dt * 1.2) firework(gantryTop(Math.random()).add(new THREE.Vector3(0, 4 + Math.random() * 6, 0)));
+  if (t > 3 && t < 14 && Math.random() < dt * 0.9) celebShell(gantryTop(Math.random()).add(new THREE.Vector3(0, 9 + Math.random() * 6, 0))); // big shells over the gantry backdrop too
+  if (Math.random() < dt * 2) confetti(podTops[0].clone().add(new THREE.Vector3((Math.random() - 0.5) * 4, 8, (Math.random() - 0.5) * 4)), 70);
+  celebParticles(dt); celebCam(dt, t);
+  const hold = CELEB.holdForBrag && !CELEB.brag && t < 40; // the winner gets time to type (max 40 s)
+  if (t > CELEB.dur + (CELEB.brag ? 4 : 0) && !hold) adPodiumEnd();
+  return true;
+}
+function adPodiumEnd() { CELEB.top[0]?.mesh.scale.set(1, 1, 1); celebCrown.visible = celebTrophy.visible = false; CELEB.top = null; celebUI().pod.classList.add('hidden'); endShow(); celebResultsExtras(); }
+// ---- bragging rights ----
+const BRAG_MAX = 60;
+const BRAG_BAD = ['fuck', 'fuk', 'fck', 'fack', 'phuk', 'phuck', 'biatch', 'btch', 'shit', 'bitch', 'cunt', 'dick', 'pussy', 'cock', 'fag', 'nigg', 'retard', 'whore', 'slut', 'twat', 'wank', 'kike', 'spic', 'chink', 'tranny', 'rape'];
+function bragFilter(s) {
+  s = String(s || '').replace(/<[^>]{0,40}>/g, '').replace(/[\u0000-\u001f<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, BRAG_MAX);
+  const norm = (x) => x.toLowerCase().replace(/[@4]/g, 'a').replace(/3/g, 'e').replace(/[1!|]/g, 'i').replace(/0/g, 'o').replace(/[5$]/g, 's').replace(/7/g, 't');
+  return s.split(' ').map((w) => (BRAG_BAD.some((b) => norm(w).replace(/[^a-z]/g, '').includes(b)) ? '★'.repeat(Math.min(6, w.length)) : w)).join(' ');
+}
+const DHBrag = { // network hook for the lobby/controller layer (T-025 / phone controllers): set onSend, call receive()
+  onSend: null,
+  submit(text) { const msg = bragFilter(text); if (!msg) return null; const w = CELEB.top?.[0] || race.finishOrder[0]; const p = w && session.byMarble(w.k); const payload = { type: 'brag', msg, by: p ? p.name : w?.name || '', marble: w?.name || '', t: Date.now() }; this.receive(payload); try { this.onSend?.(payload); } catch (e) { console.warn('brag send', e); } return payload; },
+  receive(payload) { if (!payload || payload.type !== 'brag') return; const msg = bragFilter(payload.msg); CELEB.brag = { ...payload, msg }; const ui = celebUI(); ui.brag.classList.add('hidden'); ui.bragText.textContent = `“${msg}”`; ui.bragBy.textContent = `— ${String(payload.by || '').toUpperCase().slice(0, 16)}`; ui.bragShow.classList.remove('hidden'); CELEB.t = Math.min(CELEB.t, CELEB.dur - 2); sfx.roar?.(0.14, 2); },
+};
+window.DHBrag = DHBrag;
+function celebUI() {
+  if (CELEB.ui) return CELEB.ui;
+  const css = document.createElement('style'); css.id = 'celebcss';
+  css.textContent = `#celebPod{position:fixed;inset:0;z-index:7;pointer-events:none;font-style:italic;text-transform:uppercase}
+#celebPod .top{position:absolute;left:0;right:0;top:calc(max(14px,env(safe-area-inset-top)) + 34px);text-align:center}
+#celebPod .ribbon{display:inline-block;background:#e0102f;color:#fff;font-weight:900;letter-spacing:4px;font-size:13px;padding:4px 14px;box-shadow:3px 3px 0 #000}
+#celebPod .nm{font-weight:900;font-size:clamp(34px,9vw,72px);line-height:1;margin-top:8px;color:#fff;text-shadow:0 0 24px #ffb300,4px 4px 0 #000}
+#celebPod .sub{font-weight:900;font-size:clamp(12px,3.2vw,18px);letter-spacing:2px;color:#ffb300;text-shadow:2px 2px 0 #000;margin-top:6px}
+#celebPod .clist{margin-top:8px;display:flex;gap:10px;justify-content:center;font-weight:900;font-size:13px}#celebPod .clist span{background:rgba(10,6,18,.8);padding:3px 9px}#celebPod .p1{color:#ffb300}#celebPod .p2{color:#d6dbe6}#celebPod .p3{color:#e0915a}
+#celebBrag{position:absolute;right:max(12px,env(safe-area-inset-right));bottom:calc(max(16px,env(safe-area-inset-bottom)) + 62px);width:min(400px,92vw);background:rgba(10,6,18,.92);border:3px solid #ffb300;padding:12px;pointer-events:auto;font-style:normal;text-transform:none}
+#celebBrag .who{font-weight:900;font-size:13px;letter-spacing:1px;color:#ffb300;margin-bottom:8px;font-style:italic}
+#celebBrag .row{display:flex;gap:8px}#celebBrag input{flex:1;font-size:18px;padding:10px;border:0;border-radius:4px;background:#fff;color:#111;min-width:0}
+#celebBrag button{font-weight:900;font-size:16px;padding:10px 16px;border:0;border-radius:4px;background:#e0102f;color:#fff}#celebBrag .cnt{font-size:11px;color:#aaa;text-align:right;margin-top:4px}
+@media (max-width:700px){#celebBrag{right:50%;transform:translateX(50%)}#celebBragShow{bottom:calc(max(14px,env(safe-area-inset-bottom)) + 100px)}}
+#celebBragShow{position:absolute;left:50%;bottom:calc(max(14px,env(safe-area-inset-bottom)) + 58px);transform:translate(-50%,0);width:min(980px,96vw);text-align:center;padding:10px 18px 12px;background:linear-gradient(90deg,transparent,rgba(10,6,18,.82) 12%,rgba(10,6,18,.82) 88%,transparent);border-top:3px solid #e0102f;animation:bragIn .5s cubic-bezier(.2,1.4,.4,1)}
+#celebBragShow .tx{font-weight:900;font-size:clamp(22px,5.6vw,46px);line-height:1.1;color:#fff;text-shadow:0 0 18px #ff2d95,4px 4px 0 #000;text-transform:none;word-break:break-word}
+#celebBragShow .by{margin-top:8px;font-weight:900;color:#ffb300;letter-spacing:3px;text-shadow:2px 2px 0 #000}
+@keyframes bragIn{from{transform:translate(-50%,0) scale(.3);opacity:0}to{transform:translate(-50%,0) scale(1);opacity:1}}
+.celebShop{pointer-events:auto;position:absolute;right:max(12px,env(safe-area-inset-right));bottom:calc(max(14px,env(safe-area-inset-bottom)) + 12px);background:#111;color:#fff;border:2px solid #fff;font-weight:900;font-style:italic;letter-spacing:2px;font-size:13px;padding:9px 14px;border-radius:4px;text-decoration:none}
+.celebShop:hover{background:#e0102f;border-color:#e0102f}#celebResBrag{font-weight:900;font-size:18px;margin:4px 0 10px;color:#fff;text-shadow:0 0 12px #ff2d95}#celebResBrag small{display:block;color:#ffb300;font-size:11px;letter-spacing:2px}
+#celebBanner{position:fixed;left:0;right:0;top:calc(max(10px,env(safe-area-inset-top)) + 6vh);z-index:8;pointer-events:none;text-align:center;font-style:italic;text-transform:uppercase}
+#celebBanner .b1{display:inline-block;background:#fff;color:#e0102f;font-weight:900;letter-spacing:3px;font-size:clamp(14px,3.6vw,24px);padding:5px 18px;box-shadow:4px 4px 0 #e0102f}
+#celebBanner .b2{display:block;margin:6px auto 0;width:max-content;max-width:92vw;background:#111;color:#ffb300;font-weight:900;letter-spacing:2px;font-size:clamp(10px,2.6vw,14px);padding:3px 12px}
+#celebBanner.hidden{display:none}`;
+  document.head.appendChild(css);
+  const pod = document.createElement('div'); pod.id = 'celebPod'; pod.className = 'hidden';
+  pod.innerHTML = `<div class="top"><div class="ribbon">OSAKA GP · CHAMPION</div><div class="nm"></div><div class="sub"></div><div class="clist"></div></div>
+<div id="celebBrag" class="hidden"><div class="who"></div><div class="row"><input id="celebBragIn" maxlength="${BRAG_MAX}" placeholder="Bragging rights… (60 max)" autocomplete="off"><button id="celebBragGo">SEND</button></div><div class="cnt"><span id="celebBragCnt">0</span>/${BRAG_MAX} · <a href="#" id="celebBragSkip" style="color:#aaa">skip</a></div></div>
+<div id="celebBragShow" class="hidden"><div class="tx"></div><div class="by"></div></div><a class="celebShop hidden" target="_blank" rel="noopener">SHOP DAMN HOMIE ↗</a>`;
+  document.body.appendChild(pod);
+  const ban = document.createElement('div'); ban.id = 'celebBanner'; ban.className = 'hidden'; ban.innerHTML = '<span class="b1"></span><span class="b2"></span>'; document.body.appendChild(ban);
+  const q = (s) => pod.querySelector(s);
+  const ui = CELEB.ui = { pod, ban, podName: q('.nm'), podSub: q('.sub'), podList: q('.clist'), brag: q('#celebBrag'), bragWho: q('.who'), bragIn: q('#celebBragIn'), bragShow: q('#celebBragShow'), bragText: q('#celebBragShow .tx'), bragBy: q('#celebBragShow .by'), shop: q('.celebShop') };
+  if (SHOP_URL) ui.shop.href = SHOP_URL;
+  ui.bragIn.addEventListener('input', () => { $('celebBragCnt').textContent = ui.bragIn.value.length; });
+  ui.bragIn.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') DHBrag.submit(ui.bragIn.value); });
+  q('#celebBragGo').onclick = (e) => { e.stopPropagation(); DHBrag.submit(ui.bragIn.value); };
+  q('#celebBragSkip').onclick = (e) => { e.preventDefault(); CELEB.holdForBrag = false; ui.brag.classList.add('hidden'); };
+  return ui;
+}
+function celebResultsExtras() { // results screen: the brag stays up top, plus the shop button
+  const res = $('results'); if (!res) return; let rb = $('celebResBrag'); if (!rb) { rb = document.createElement('div'); rb.id = 'celebResBrag'; $('resTitle').after(rb); }
+  rb.innerHTML = CELEB.brag ? `“${CELEB.brag.msg.replace(/[&<>]/g, '')}”<small>— ${String(CELEB.brag.by).toUpperCase().replace(/[&<>]/g, '')}</small>` : '';
+  let sb = res.querySelector('.celebShop'); if (!sb && SHOP_URL) { sb = document.createElement('a'); sb.className = 'celebShop'; sb.target = '_blank'; sb.rel = 'noopener'; sb.href = SHOP_URL; sb.textContent = 'SHOP DAMN HOMIE ↗'; sb.style.position = 'static'; sb.style.display = 'inline-block'; sb.style.marginTop = '10px'; res.appendChild(sb); }
+}
+// ---- (b) replay: the decisive move from three angles in slow-mo, the finish from three angles, broadcast banners ----
+function adCelebrateSegs(segs) {
+  if (!CELEB.on) return segs;
+  const w = race.finishOrder[0] || standings()[0]; const tw = w.finished ? w.finishTime : race.t; const [a] = rec.range();
+  let lead = race.keyMoments.filter((x) => x.type === 'lead' && x.k === w.k && x.t < tw - 3 && x.t - 3 > a).pop() || race.keyMoments.filter((x) => x.t < tw - 3 && x.t - 3 > a).pop(); // the pass that won it (else the last big moment)
+  const out = [];
+  let lateMove = false; if (lead && lead.t + 1.5 > tw - 8.5) { lead = null; lateMove = true; } // the move happened in the run to the flag: the finish angles already show it
+  if (lead) {
+    const cap = `${marbles[lead.k].name.toUpperCase()} TAKES P1 · LAP ${lead.lap}${lead.at ? ' · ' + lead.at : ''}`;
+    out.push({ t0: lead.t - 2.5, t1: lead.t + 1.5, speed: 0.5, cam: 'tvreplay', k: lead.k, cap, banner: ['THE DECISIVE MOVE', 'ANGLE 1 / 3 · TRACKSIDE'] });
+    out.push({ t0: lead.t - 1.6, t1: lead.t + 1.0, speed: 0.35, cam: 'chase', k: lead.k, cap, banner: ['THE DECISIVE MOVE', 'ANGLE 2 / 3 · ON BOARD'] });
+    out.push({ t0: lead.t - 2.0, t1: lead.t + 1.5, speed: 0.5, cam: 'blimp', k: lead.k, cap, banner: ['THE DECISIVE MOVE', 'ANGLE 3 / 3 · BLIMP'] });
+  }
+  const finish = segs.filter((s) => s.t0 >= tw - 8.01); const early = segs.filter((s) => s.t0 < tw - 8.01 && (!lead || Math.abs(s.t0 - (lead.t - 2.5)) > 3));
+  const tagF = { blimp: ['THE RUN TO THE FLAG', 'BLIMP CAM'], chase: ['THE FINISH', 'SLOW-MO · ON BOARD'], gantry: ['THE FINISH', 'HEAD ON'], photo: ['PHOTO FINISH', 'SIDE ON · 0.15×'], orbit: ['CHAMPION', marbles[w.k].name.toUpperCase()] };
+  if (lateMove) tagF.blimp = ['THE DECISIVE MOVE', 'IN THE RUN TO THE FLAG · BLIMP'];
+  for (const s of finish) s.banner = tagF[s.cam] || null;
+  for (const s of early) if (!s.banner) s.banner = s.cam === 'tvreplay' ? ['LEAD CHANGE', 'SLOW-MO · TRACKSIDE'] : ['REPLAY', String(s.cap || '').toUpperCase()];
+  early.sort((x, y) => x.t0 - y.t0); const at = out.length ? early.filter((s) => s.t0 < out[0].t0).length : early.length;
+  const res = [...early.slice(0, at), ...out, ...early.slice(at)].concat(finish); // the three angles stay in order 1-2-3
+  adBlimpSegCheck(res); // AD TV r3: drop blimp angles that can't see the subject
+  return res.filter((s) => s.t1 > s.t0);
+}
+function celebBannerTick() { if (view.mode !== 'podium' && celebCrown.visible) { celebCrown.visible = celebTrophy.visible = false; if (CELEB.top) { CELEB.top[0]?.mesh.scale.set(1, 1, 1); CELEB.top = null; } CELEB.ui?.pod.classList.add('hidden'); celebResultsExtras(); } const ui = CELEB.ui || (view.mode === 'replay' ? celebUI() : null); if (!ui) return; const s = view.mode === 'replay' ? view.segs[view.si] : null; if (s && s.banner) { ui.ban.querySelector('.b1').textContent = s.banner[0]; ui.ban.querySelector('.b2').textContent = s.banner[1]; ui.ban.classList.remove('hidden'); } else ui.ban.classList.add('hidden'); }
+setInterval(celebBannerTick, 120);
+if (window.__dh) Object.assign(window.__dh, { celeb: CELEB, DHBrag, bragFilter, podiumNow: (forceBrag) => { CELEB.forceBrag = !!forceBrag; if (!race.finishOrder.length) for (const m of standings().slice(0, 3)) { m.finished = true; m.finishTime = race.t; race.finishOrder.push(m); } race.phase = 'over'; $('rp').classList.remove('hidden'); $('hud').classList.add('hidden'); startPodium(); }, replaySegs: () => view.segs.map((s) => [s.cam, +s.t0.toFixed(2), +s.t1.toFixed(2), s.speed, s.banner?.[0] || '']) });
+
+// ======================================================================================================
+// ---------- AD TV r3 (Art Director, 11-14): blimp-ride cleanup + replay angle checks (own block) ----------
+// (a) While the camera rides the gondola (live Blimp cam, TV blimp aerial, replay blimp angle) the two red boom struts that pass
+//     0.4 u beside the lens are hidden; they read as giant red slabs across the frame. Everything else on the blimp stays.
+// (b) Replay: a blimp angle is kept only if the recorded gondola is above the subject and has a clear line to it at 3 sample
+//     times; otherwise it becomes a trackside long-lens angle (no "decisive move" shot that shows no marble).
+// (c) Replay on-board (chase) angles cut the near plane to 2.8 u so a gantry post between the lens and the marble vanishes.
+function adBlimpSegCheck(segs) {
+  if (!blimp || !segs) return;
+  for (const s of segs) {
+    if (s.cam !== 'blimp') continue; let ok = 0;
+    for (const f of [0.15, 0.5, 0.85]) {
+      rec.apply(s.t0 + (s.t1 - s.t0) * f); blimp.updateMatrixWorld(true);
+      const wp = gondolaMount.getWorldPosition(new THREE.Vector3()), tp = marbles[s.k].mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0));
+      const hz = Math.hypot(wp.x - tp.x, wp.z - tp.z);
+      if (wp.distanceTo(tp) < 85 && wp.y - tp.y > 6 && (wp.y - tp.y) / Math.max(1, hz) > 0.2 && visibleAll(wp, tp)) ok++;
+    }
+    if (ok < 3) { s.cam = 'tvreplay'; if (s.banner) s.banner = [s.banner[0], String(s.banner[1]).replace(/BLIMP( CAM)?/, 'LONG LENS')]; }
+  }
+}
+{
+  const struts = gondola.children.filter((o) => o.isMesh && o.geometry.parameters && o.geometry.parameters.width === 2.4 && o.geometry.parameters.height === 0.09);
+  const prev = scene.onBeforeRender;
+  scene.onBeforeRender = function (...a) {
+    if (prev) prev.apply(this, a);
+    const ride = camera.parent === gondolaMount; for (const o of struts) o.visible = !ride;
+    if (typeof adRideFrame === 'function') adRideFrame(ride); // AD TV r4: long-lens FOV + gondola edge
+    if (view.mode === 'replay') { const sg = view.segs && view.segs[view.si]; if (sg && sg.cam === 'chase' && camera.near < 2.8) setNear(2.8); if (sg && sg.cam === 'gantry' && marbles[sg.k]) { const d = camera.position.distanceTo(marbles[sg.k].mesh.position); setNear(Math.max(0.2, Math.min(8, d - 3))); } } // gantry head-on: posts between lens and marble vanish
+  };
+}
+
+
+// ======================================================================================================
+// ---------- AD TV r4 (Art Director, 11-14): a blimp that reads as a BLIMP + podium title panel (own block) ----------
+// A real blimp does not chase the pack; it parks high and far and the long lens pans. At each new aerial the blimp is placed (while
+// the camera is on it, so the move is never seen) at a station ~64 u from where the pack will be mid-shot, ~47 deg down, on the side
+// with a clear line of sight. It then hovers and drifts slowly (2.5 u/s) while the gondola camera pans with the pack.
+// Lens: opens at 40 deg with the gondola window frame (sill + mullion, real children of the camera) in the bottom-right corner, then
+// zooms to a long lens (12-24 deg) framed on the lead group; the frame leaves shot naturally as the lens tightens. Between aerials
+// the blimp idles high over the infield. At least one aerial per race, never in the final 10 s. Podium: solid title panel.
+var AD4 = { frameMode: (Q.get('blimpframe') || 'a').toLowerCase(), subK: -1, aim: null, aimV: null, aimInit: true, tgt: null, tgtV: null, lostT: 0, subLast: null, gond: null, env: null, blimpT0: 0, lastShotAt: -1e9, fovWant: 0, fovAt: -1e9, lastNow: 0, housing: null, lead: new THREE.Vector3(), station: null, drift: new THREE.Vector3(), stT: 0, idle: null, trophyOff: null, ltLap: 0, badT: 0 };
+const AD4_D = 80, AD4_EL = 0.76;
+function adBlimpWant(focus) {
+  if (typeof AD4 === 'undefined' || !AD4) return null;
+  const now = performance.now();
+  if (AD4.station && now - AD4.lastShotAt < 1500) { const dt = Math.min(0.1, (now - AD4.stT) / 1000); AD4.stT = now; AD4.station.addScaledVector(AD4.drift, dt); return AD4.station.clone(); }
+  AD4.station = null; // idle: high over the infield, leaning toward the pack (seen from the ground cams as a blimp in the sky)
+  const w = center.clone().lerp(focus, 0.35); w.y = trackBox.max.y + 20;
+  if (!AD4.idle) AD4.idle = w.clone(); else AD4.idle.lerp(w, 0.01); return AD4.idle.clone();
+}
+function adGroup(k) { // lead group around the subject (unfinished marbles within 14 u, same lap); always returns a non-empty array
+  const sm = marbles[k] || marbles[0]; if (!sm) return [];
+  const g = marbles.filter((m) => m && !m.finished && m.mesh.position.distanceTo(sm.mesh.position) < 14 && Math.abs((m.prog || 0) - (sm.prog || 0)) < 16);
+  return g.length ? g : [sm];
+}
+function adBlimpPlan(k, dur = 6.5) {
+  const m = marbles[k], v = m.body.linvel(), sp = THREE.MathUtils.clamp(Math.hypot(v.x, v.y, v.z), 6, 30);
+  const W = [1.6, 1.4, 1.2, 1, 0.7, 0.5], pts = [0, 0.12, 0.25, 0.4, 0.6, 0.8].map((f) => pointAtS(m.pr.s + sp * dur * 0.85 * f).p.add(new THREE.Vector3(0, 0.3, 0)));
+  pts[0].copy(m.mesh.position).add(new THREE.Vector3(0, 0.3, 0));
+  const C = pts.slice(0, 4).reduce((a, p) => a.add(p), new THREE.Vector3()).divideScalar(4); // the first ~3 s matter most
+  const base = new THREE.Vector3(center.x - C.x, 0, center.z - C.z); if (base.lengthSq() < 1) base.set(1, 0, 0); base.normalize();
+  let best = null; const cands = [];
+  for (const a of [0, 0.6, -0.6, 1.2, -1.2, 1.9, -1.9, 2.6, -2.6, Math.PI]) for (const hz0 of [50, 60, 72]) {
+    const d = base.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), a), st = C.clone().addScaledVector(d, hz0);
+    st.y = Math.max(C.y + hz0 * Math.tan(AD4_EL + 0.05), trackBox.max.y + 15);
+    let sc = -Math.abs(a) * 0.3;
+    pts.forEach((p, i) => { const w = W[i], hz = Math.hypot(st.x - p.x, st.z - p.z), el = Math.atan2(st.y - p.y, hz) * 57.3, dd = st.distanceTo(p);
+      sc += w * (el >= 35 && el <= 55 ? 2 : el >= 30 && el <= 60 ? 0.8 : -2); if (dd > 115) sc -= w; });
+    cands.push({ st, sc });
+  }
+  // sight lines are raycasts against the whole track (slow): test only the best-scored stations, 3 samples each, stop at the first clear one
+  cands.sort((x, y) => y.sc - x.sc); best = cands[0].st;
+  for (const c of cands.slice(0, 6)) if (visibleT(c.st, pts[0]) && visibleT(c.st, pts[2]) && visibleT(c.st, pts[4])) { best = c.st; break; }
+  AD4.station = best; AD4.stT = performance.now();
+  const ch = pts[pts.length - 1].clone().sub(pts[0]).setY(0); AD4.drift.copy(ch.lengthSq() > 1 ? ch.normalize().multiplyScalar(2.5) : ch.set(0, 0, 0));
+  BL.pos.copy(best); BL.vel.set(0, 0, 0); if (blimp) { blimp.position.copy(best); blimp.updateMatrixWorld(true); }
+}
+// ---- AD TV r5 (11-14): the aerial HOLDS the lead group. Aim = critically damped spring on the group centroid with velocity
+// feed-forward (no lag, no jitter), set every frame on the gondola camera. Lens sized so the group fills ~20% of the frame width
+// (P2/P3 only join the group inside 1.5 s). If the subject is lost (respawn jump, or outside 80% of the frame for 0.25 s) the
+// shot re-targets the best-placed marble still on screen; if none, it cuts (TV, after the 5 s floor) or re-parks the blimp.
+// Gondola framing A/B (?blimpframe=a|b): A = soft rounded window corner overlay (bezel, livery stripe, vignette, slight blur);
+// B = a sliver of the blimp envelope across the top of the opening frame. Both leave as the lens tightens.
+function adBlimpGroup(k) {
+  const st = standings(), sm = marbles[k] || st[0], g = [sm]; if (!sm || sm.finished) return g; const i = st.indexOf(sm);
+  for (const dir of [-1, 1]) for (let d = 1; d <= 2; d++) { const o = st[i + dir * d]; if (!o || o.finished) break;
+    const gs = dir < 0 ? gapSec(o, sm) : gapSec(sm, o); if (!(gs < 1.5) || Math.abs(o.prog - sm.prog) > 40 || o.mesh.position.distanceTo(sm.mesh.position) > 25) break; g.push(o); } // AD TV r5o: back to 40 / 25 u (r5n's 12 / 10 u left 1.5 s chasers outside the frame)
+  return g;
+}
+function adBlimpShot(dt, now, fk = -1, age = null) { AD4.age = age; AD4.ageAt = now; // AD TV r5: TV shot age, for the late drift cut
+  const st0 = standings(), lead = st0.find((m) => !m.finished) || st0[0];
+  const fresh = camera.parent !== gondolaMount || now - AD4.lastShotAt > 1500; // 1.5 s: slow phones (4-10 fps) must not re-open the shot every frame
+  if (fresh) { AD4.blimpT0 = now; AD4.badT = 0; AD4.lostT = 0; AD4.subK = fk >= 0 && marbles[fk] ? fk : lead.k; AD4.subLast = null; AD4.aimInit = true; if (view.mode === 'live') { adBlimpPlan(AD4.subK); camSnap = true; } }
+  if (!marbles[AD4.subK]) AD4.subK = lead.k;
+  AD4.lastShotAt = now; if (age == null) age = (now - AD4.blimpT0) / 1000;
+  const wp = blimp ? (gondolaMount.updateWorldMatrix(true, false), gondolaMount.getWorldPosition(new THREE.Vector3())) : BL.pos.clone();
+  let grp = adBlimpGroup(AD4.subK); if (!Array.isArray(grp) || !grp.length) grp = [marbles[AD4.subK] || lead];
+  const c = new THREE.Vector3(), pv = new THREE.Vector3();
+  for (const m of grp) { c.add(m.mesh.position); const v = m.body.linvel(); pv.add(new THREE.Vector3(v.x, v.y, v.z)); }
+  c.divideScalar(grp.length); pv.divideScalar(grp.length); if (pv.length() > 45) pv.setLength(45);
+  const smk = marbles[AD4.subK], sv = smk.body.linvel(); AD4.tgt = c.lerp(smk.mesh.position, 0.7).add(new THREE.Vector3(0, 0.3, 0)); AD4.tgtV = pv.lerp(new THREE.Vector3(sv.x, sv.y, sv.z), 0.7); if (AD4.tgtV.length() > 45) AD4.tgtV.setLength(45); // subject-weighted
+  let ext = 0; for (const a of grp) for (const b of grp) ext = Math.max(ext, a.mesh.position.distanceTo(b.mesh.position));
+  ext = Math.max(4, Math.min(14, ext + 1)); // group extent incl. one marble diameter; 3.5 u floor so a lone marble + its tag still reads
+  const dist = Math.max(1, wp.distanceTo(AD4.tgt));
+  if (AD4.station && view.mode === 'live') { // pilot holds ~45 deg down (<= 14 u/s)
+    const away = new THREE.Vector3(wp.x - AD4.tgt.x, 0, wp.z - AD4.tgt.z), hz = away.length(); if (hz > 0.1) away.divideScalar(hz); else away.set(1, 0, 0);
+    const want = (wp.y - AD4.tgt.y) / Math.tan(0.785), sp = THREE.MathUtils.clamp((want - hz) * 0.9, -14, 14);
+    AD4.drift.lerp(away.multiplyScalar(sp), Math.min(1, dt * 2));
+  }
+  const asp = Math.max(0.3, camera.aspect), hTight = 2 * Math.atan(ext / 0.23 / 2 / dist); // group ~ 20% of the frame width (measured incl. spacing)
+  const vTight = THREE.MathUtils.clamp(Math.max(THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(hTight / 2) / asp)), THREE.MathUtils.radToDeg(2 * Math.atan(ext / 0.4 / 2 / dist))), 7, 40); // and <= 40% of the frame height; never under 7 deg (tracking margin)
+  const vOpen = asp >= 1 ? 40 : Math.min(72, THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(20)) / asp)));
+  AD4.fovWant = THREE.MathUtils.lerp(vOpen, Math.min(vOpen, vTight), THREE.MathUtils.smoothstep(age, 1.2, 3.6)); AD4.openFov = vOpen; AD4.fovAt = now;
+  if (view.mode === 'live' && camMode === 1 && age > 7) { // Blimp button: re-park (a cut) only when the pack leaves the blimp's good view
+    const hz = Math.hypot(wp.x - AD4.tgt.x, wp.z - AD4.tgt.z), el = Math.atan2(wp.y - AD4.tgt.y, hz) * 57.3;
+    AD4.badT = (el < 30 || el > 66 || dist > 110) ? AD4.badT + dt : 0;
+    if (AD4.badT > 0.6) { adBlimpPlan(AD4.subK); AD4.blimpT0 = now; AD4.badT = 0; AD4.aimInit = true; camSnap = true; }
+  }
+  shotName = 'BLIMP \u00b7 AERIAL';
+  return { gondola: !!blimp, pos: wp, look: AD4.aim ? AD4.aim.clone() : AD4.tgt.clone(), fov: AD4.fovWant };
+}
+const _ad5M = new THREE.Matrix4(), _ad5Q = new THREE.Quaternion(), _ad5P = new THREE.Quaternion(), _ad5Up = new THREE.Vector3(0, 1, 0);
+function adSoftRetarget() { // subject drifting off-centre: hand the shot to the marble nearest the centre (inside the middle 45%), at most every 1.5 s
+  const now = performance.now(); if (now - (AD4.softAt || 0) < 1500) return false; let pick = null, bd = 0.35;
+  for (const m of marbles) { if (m.finished || m.k === AD4.subK) continue; const n = m.mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0)).project(camera); const d = Math.max(Math.abs(n.x), Math.abs(n.y)); if (n.z < 1 && d < bd) { bd = d; pick = m; } }
+  if (!pick) return false; AD4.softAt = now; AD4.subK = pick.k; AD4.subLast = null; AD4.retargets = (AD4.retargets || 0) + 1;
+  const sh = view.mode === 'live' && camMode === 0 && TV5.shot && TV5.shot.type === 'blimp' ? TV5.shot : null;
+  if (sh) { sh.k = pick.k; sh.k2 = -1; sh.ltRefresh = true; try { tv5LowerThird(sh); } catch (e) {} finally { sh.ltRefresh = false; } } return true;
+}
+function adRetarget(why) {
+  const live = view.mode === 'live', sh = live && camMode === 0 && TV5.shot && TV5.shot.type === 'blimp' ? TV5.shot : null;
+  const st = standings(); let pick = null;
+  for (const m of st) { if (m.finished || m.k === AD4.subK) continue; const n = m.mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0)).project(camera); if (n.z < 1 && Math.abs(n.x) < 0.7 && Math.abs(n.y) < 0.7) { pick = m; break; } }
+  if (pick) { AD4.subK = pick.k; AD4.subLast = null; } // smooth pan onto the next group already in frame
+  else if (sh && performance.now() / 1000 - sh.t0 >= TV_MIN_HOLD) { sh.dur = 0; return; } // nothing left in frame: let the director cut (never hold empty track)
+  else { const ld = st.find((m) => !m.finished) || st[0]; AD4.subK = ld.k; AD4.subLast = null; if (live) { adBlimpPlan(ld.k); AD4.aimInit = true; camSnap = true; } }
+  AD4.retargets = (AD4.retargets || 0) + 1;
+  if (sh) { sh.k = AD4.subK; sh.k2 = -1; sh.ltRefresh = true; try { tv5LowerThird(sh); } catch (e) {} finally { sh.ltRefresh = false; } }
+}
+function adAim(dt) { // critically damped spring (omega 12) on the subject-weighted group centre, + velocity feed-forward 2v/omega = zero steady-state lag (small lead, so hairpins stay framed)
+  if (!AD4.tgt) return; const W = 12;
+  if (AD4.aimInit || !AD4.aim) { AD4.aim = AD4.tgt.clone(); AD4.aimV = AD4.tgtV.clone(); AD4.aimInit = false; }
+  const goal = AD4.tgt.clone().addScaledVector(AD4.tgtV, 2 / W + dt), /* + one frame of travel: on 10 fps phones the marble moves ~3 u between aim and render */ n = Math.max(1, Math.ceil(dt / 0.01)), h = dt / n;
+  for (let k = 0; k < n; k++) { const a = goal.clone().sub(AD4.aim).multiplyScalar(W * W).addScaledVector(AD4.aimV, -2 * W); AD4.aimV.addScaledVector(a, h); AD4.aim.addScaledVector(AD4.aimV, h); }
+  adAimApply();
+}
+function adAimApply() { // AD TV r5: point the gondola camera at AD4.aim
+  gondolaMount.updateWorldMatrix(true, false); const wp = gondolaMount.getWorldPosition(new THREE.Vector3());
+  _ad5M.lookAt(wp, AD4.aim, _ad5Up); _ad5Q.setFromRotationMatrix(_ad5M); gondolaMount.getWorldQuaternion(_ad5P);
+  camera.quaternion.copy(_ad5P.invert().multiply(_ad5Q)); camera.updateMatrixWorld(true);
+}
+function adRideFrame(ride) {
+  const now = performance.now(), dt = Math.min(0.1, Math.max(0, (now - AD4.lastNow) / 1000)); AD4.lastNow = now;
+  const live = ride && now - AD4.fovAt < 1500;
+  if (live) {
+    const first = now - AD4.blimpT0 < 40; const f = first ? AD4.fovWant : camera.fov + (AD4.fovWant - camera.fov) * Math.min(1, dt * 2); if (Math.abs(f - camera.fov) > 0.01) { camera.fov = f; camera.updateProjectionMatrix(); }
+    adAim(dt);
+    const sm = marbles[AD4.subK];
+    if (sm) { const p = sm.mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0)), jump = AD4.subLast && p.distanceTo(AD4.subLast) > 6; AD4.subLast = p.clone();
+      const n = p.project(camera), off = n.z > 1 || Math.abs(n.x) > 0.8 || Math.abs(n.y) > 0.8 || sm.finished;
+      const soft = !off && (Math.abs(n.x) > 0.45 || Math.abs(n.y) > 0.45);
+      const ex = Math.max(Math.abs(n.x), Math.abs(n.y)) - 0.35; if (!off && ex > 0 && AD4.aim) { AD4.aim.lerp(sm.mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0)), Math.min(0.5, ex * 20 * dt)); adAimApply(); } // AD TV r5: proportional catch-up when the subject drifts past 0.35 NDC (continuous, so no jitter)
+      { const sh5 = TV5.shot; if (sh5 && ex > 0.15 && AD4.age != null && AD4.age + (now - AD4.ageAt) / 1000 >= TV_MIN_HOLD) sh5.dur = 0; } // AD TV r5: late in the hold and drifting toward the 60% edge: let the director cut rather than lose the frame
+      AD4.softT = soft ? (AD4.softT || 0) + dt : 0; if (AD4.softT > 0.06) { AD4.softT = 0; adSoftRetarget(); }
+      AD4.lostT = off ? (AD4.lostT || 0) + dt : 0;
+      if (jump || AD4.lostT > 0.05) { AD4.lostT = 0; adRetarget(jump ? 'respawn' : 'off'); } }
+  }
+  adFrameFX(live);
+  { const f = live ? THREE.MathUtils.clamp(Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / Math.tan(THREE.MathUtils.degToRad(20)), 0.25, 1) : 1; // AD TV r5p: player tags are sizeAttenuation:false, so they grow 5x on the long lens; hold them near normal size
+    for (const t of tags) if (Math.abs(t.sp.scale.x - 0.13 * f) > 1e-4) t.sp.scale.set(0.13 * f, 0.037 * f, 1); }
+}
+function adFrameFX(live) { // gondola framing A/B
+  const of = AD4.openFov || 40, s = live ? Math.tan(THREE.MathUtils.degToRad(of / 2)) / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) : 9;
+  if (AD4.frameMode === 'b') {
+    if (!AD4.env && blimp) { let best = null, br = 0; blimp.traverse((o) => { if (!o.isMesh || gondola === o || gondola.getObjectById(o.id)) return; o.geometry.computeBoundingSphere(); const r = o.geometry.boundingSphere.radius; if (r > br) { br = r; best = o; } });
+      const mat = best ? best.material : new THREE.MeshStandardMaterial({ color: 0xf2f0ec, roughness: 0.5 });
+      const e = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 24), Array.isArray(mat) ? mat[0] : mat); e.name = 'FX_dh_blimp_envelope_sliver'; e.visible = false; camera.add(e); AD4.env = e; }
+    const e = AD4.env; if (!e) return; e.visible = live && s < 1.6;
+    if (e.visible) { const z = 7, top = z * Math.tan(THREE.MathUtils.degToRad(of / 2)), R = 3.2; e.scale.set(R * 2.8, R, R); e.position.set(0.15 * top * camera.aspect, top + R - 0.13 * 2 * top, -z); e.rotation.set(0.12, 0, 0.04); }
+    return;
+  }
+  if (!AD4.gond) { const d = document.createElement('div'); d.id = 'adGondola'; d.innerHTML = '<div class="win"></div><div class="rim"></div><div class="vig"></div>'; renderer.domElement.after(d); AD4.gond = d; }
+  const on = live && s < 1.8; AD4.gond.classList.toggle('on', on);
+  if (on) AD4.gond.style.transform = 'scale(' + Math.max(1, s).toFixed(3) + ')';
+}
+function tv5BlimpDue(sub, ts) { // at least one aerial per race; the whole shot (<= 7.5 s) ends before the final 10 s
+  if (!blimp || TV5.blimpDone || race.phase !== 'race' || race.t < 5) return false;
+  const ld = standings()[0]; if (ld.finished) return false;
+  return tv5EstToFlag(ld.k) > 18; // the blimp re-parks for its shot (adBlimpPlan), so its idle position does not matter
+}
+function adTrophyOff() {
+  if (AD4.trophyOff) return AD4.trophyOff;
+  const t = T[podIdx].clone().setY(0).normalize(), n = NRM[podIdx].clone().setY(0).normalize();
+  const toCam = celebCamPos(CELEB.camA ?? 0, 9).sub(podTops[0]).setY(0); const fs = Math.sign(toCam.dot(t)) || 1;
+  const side = podTops[1] ? (-Math.sign(podTops[1].clone().sub(podTops[0]).dot(n)) || 1) : 1;
+  AD4.trophyOff = t.multiplyScalar(-0.36 * fs).add(n.multiplyScalar(0.72 * side)); return AD4.trophyOff; // beside the winner and a touch behind, so it never covers the crowned marble
+}
+new MutationObserver(() => { // lower-third lap re-written in the same task the HUD lap text changes (microtask), so the two can never disagree
+  if (!TV5.ui || !TV5.shot || view.mode !== 'live') return; TV5.shot.ltRefresh = true; try { tv5LowerThird(TV5.shot); } catch (e) {} finally { TV5.shot.ltRefresh = false; }
+}).observe($('lap'), { childList: true, characterData: true, subtree: true });
+setInterval(() => { // live lower-third: gaps and the lap refresh while it is on screen (no re-slide)
+  if (!TV5.ui || !TV5.shot || view.mode !== 'live' || !TV5.ui.lt.classList.contains('on')) return;
+  TV5.shot.ltRefresh = true; try { tv5LowerThird(TV5.shot); } finally { TV5.shot.ltRefresh = false; }
+}, 250);
+{ // AD TV r5 (11-14): calm the painted far-ground ring (LP3_bg_far_ground). Seen from the high blimp through a long lens its fine purple
+  // speckle shimmered as the camera moved. Trilinear mips + anisotropy and a +1.5 mip bias on that one map: the speckle blurs out,
+  // the soft city-light glow stays. Only this mesh; the horizon silhouette ring is untouched.
+  const calm = []; world3d.traverse((o) => { if (o.isMesh && /^LP3_bg_far_ground/.test(o.name)) calm.push(o); });
+  for (const o of calm) { const m = o.material; if (!m || !m.map) continue;
+    m.map.generateMipmaps = true; m.map.minFilter = THREE.LinearMipmapLinearFilter; m.map.magFilter = THREE.LinearFilter; m.map.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy()); m.map.needsUpdate = true;
+    m.onBeforeCompile = (sh) => { sh.fragmentShader = sh.fragmentShader.replace('#include <map_fragment>', THREE.ShaderChunk.map_fragment.replace('vec4 sampledDiffuseColor = texture2D( map, vMapUv );', 'vec2 adTs = 1.25 / vec2( textureSize( map, 0 ) ); vec4 sampledDiffuseColor = vec4( 0.0 ); for ( int ax = -1; ax <= 1; ax ++ ) for ( int ay = -1; ay <= 1; ay ++ ) { float w = ( ax == 0 ? 2.0 : 1.0 ) * ( ay == 0 ? 2.0 : 1.0 ); sampledDiffuseColor += w * texture2D( map, vMapUv + vec2( float( ax ), float( ay ) ) * adTs, 1.0 ); } sampledDiffuseColor /= 16.0;')); }; // 3x3 gaussian texel-space blur + mip bias: kills the speckle at any lens, keeps the soft glow
+    m.customProgramCacheKey = () => 'ad5calm3'; m.needsUpdate = true; }
+}
+{ const css = document.createElement('style'); css.id = 'ad4css';
+  css.textContent = '#adGondola{position:absolute;inset:0;pointer-events:none;overflow:hidden;display:none;transform-origin:42% 40%;will-change:transform}#adGondola.on{display:block;animation:adGIn .3s ease-out}@keyframes adGIn{from{opacity:0}to{opacity:1}}'
+    + '#adGondola .win{position:absolute;left:-14%;top:-14%;right:4.5%;bottom:12%;border-radius:0 0 8vmin 0;box-shadow:0 0 5px 100vmax #18121f,inset -1vmin -1vmin 3.5vmin rgba(0,0,0,.55)}'
+    + '#adGondola .win:after{content:"";position:absolute;left:-2vmin;right:7vmin;bottom:-2.6vmin;height:.8vmin;background:#d7192d;border-radius:.4vmin;box-shadow:0 0 3px #d7192d}'
+    + '#adGondola .rim{position:absolute;left:-14%;top:-14%;right:4.5%;bottom:12%;border-radius:0 0 8vmin 0;border-right:.45vmin solid rgba(255,255,255,.14);border-bottom:.45vmin solid rgba(255,255,255,.12);box-shadow:inset -2px -2px 4px rgba(255,255,255,.06)}'
+    + '#adGondola .vig{position:absolute;inset:0;background:radial-gradient(ellipse 80% 78% at 42% 40%,transparent 58%,rgba(10,5,16,.5) 100%)}'
+    + 'body #tv5lt{left:max(5vw,env(safe-area-inset-left));max-width:90vw;transform:translateX(-14px);opacity:0;transition:transform .45s cubic-bezier(.2,.9,.2,1),opacity .3s}body #tv5lt.on{transform:none;opacity:1}'
+    + 'body #tv5lt .bd{min-width:0;flex:0 1 auto}body #tv5lt .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}body #tv5lt .wm{flex:0 0 auto}@media (max-width:600px){body #tv5lt .wm{display:none}body #tv5lt .sub{font-size:10px;letter-spacing:1px}}'
+    + 'body #tv5tag{max-width:90vw;box-sizing:border-box;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
+    + 'body #celebPod .top{left:50%;right:auto;transform:translateX(-50%);width:min(760px,90vw);box-sizing:border-box;padding:10px 14px 12px;background:linear-gradient(180deg,rgba(12,7,20,.97),rgba(24,12,36,.95));border-top:4px solid #e0102f;border-bottom:4px solid #e0102f;box-shadow:0 12px 34px rgba(0,0,0,.55),4px 4px 0 #000}'
+    + 'body #celebPod .top .ribbon{box-shadow:none}body #celebPod .top .nm{text-shadow:0 0 12px rgba(255,179,0,.5),3px 3px 0 #000}body #celebPod .top .clist span{background:rgba(255,255,255,.08)}';
+  document.head.appendChild(css); }
