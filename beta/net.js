@@ -152,8 +152,11 @@ function tick() {
     if (!xy) { f.el.style.opacity = 0; continue; }
     f.el.style.left = xy[0] + 'px'; f.el.style.top = (xy[1] - (f.kind === 'bubble' ? 0 : u * 40)) + 'px'; f.el.style.opacity = u > 0.75 ? (1 - u) * 4 : 1;
   }
+  requestAnimationFrame(tick);
+}
+function netTick() { // timer, not rAF: keeps phones updated even if the host tab is in the background
   // race state to phones, ~3 Hz; phase changes immediately
-  const ph = phaseNow();
+  const now = performance.now(), ph = phaseNow();
   if (party.phones.size && (ph !== party.lastPhase || now - party.lastSent > 330)) {
     if (ph !== party.lastPhase) { party.lastPhase = ph; sendAll({ type: 'phase', phase: ph }); if (ph === 'lobby') { for (const p of party.phones.values()) p.ready = false; pushLobby(); } }
     party.lastSent = now;
@@ -167,9 +170,8 @@ function tick() {
     }
     if (ph !== 'result') party.resultSent = false;
   }
-  // player name tags over marbles while racing
-  requestAnimationFrame(tick);
 }
+setInterval(netTick, 250);
 requestAnimationFrame(tick);
 if (new URLSearchParams(location.search).get('party') === '1') btn.click();
 console.log('[party] ready: press 📱 Party to open a room');
