@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0b0612">
+<title>Damn Homie · Controller (UI mockup)</title>
+<!-- Art Director design deliverable for the phone-controller ticket. Static, no three.js, no frameworks: one HTML file, inline CSS + ~150 lines JS.
+     Claude wires it to the WebSocket relay: every action below calls DHC.send({...}); the host's messages arrive in DHC.onMessage(msg).
+     Screens: join -> pick -> ready -> race (emotes / cheer / short message / optional tilt) -> result (winner bragging box). Demo nav at the bottom. -->
+<style>
+:root{--red:#e0102f;--gold:#ffb300;--ink:#0b0612;--panel:#16101f;--line:#2a2135;--pink:#ff2d95;--cyan:#00e5ff}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--ink);color:#fff;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overscroll-behavior:none}
+body{display:flex;flex-direction:column;padding:max(12px,env(safe-area-inset-top)) 14px max(12px,env(safe-area-inset-bottom))}
+header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.wm{font-weight:900;font-style:italic;letter-spacing:1px;font-size:18px;line-height:.95;text-transform:uppercase}.wm small{display:block;font-size:10px;letter-spacing:3px;color:var(--gold)}
+.room{background:#fff;color:var(--red);font-weight:900;font-style:italic;letter-spacing:3px;padding:4px 10px;font-size:15px;box-shadow:3px 3px 0 var(--red)}
+.dot.warn{background:#ffb300;box-shadow:0 0 6px #ffb300;animation:bl 1s steps(2) infinite}@keyframes bl{50%{opacity:.2}}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#3ddc84;margin-right:6px;box-shadow:0 0 6px #3ddc84}
+section{display:none;flex:1;flex-direction:column;gap:12px;min-height:0}section.on{display:flex}
+h2{margin:4px 0 0;font-size:22px;font-weight:900;font-style:italic;text-transform:uppercase}
+p.hint{margin:0;color:#b9b0c6;font-size:13px}
+input{width:100%;font-size:22px;padding:14px;border-radius:10px;border:2px solid var(--line);background:var(--panel);color:#fff;outline:none}
+input:focus{border-color:var(--gold)}
+input.code{text-transform:uppercase;letter-spacing:10px;text-align:center;font-weight:900;font-size:30px}
+button{font:inherit;color:inherit;border:0;cursor:pointer}
+.big{width:100%;padding:18px;border-radius:12px;background:var(--red);font-weight:900;font-style:italic;font-size:22px;letter-spacing:1px;text-transform:uppercase;box-shadow:0 5px 0 #7a0016}
+.big:active{transform:translateY(3px);box-shadow:0 2px 0 #7a0016}
+.big.ready{background:#3ddc84;color:#06200f;box-shadow:0 5px 0 #1d7a45}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;overflow:auto;padding:4px}
+.ball{aspect-ratio:1;border-radius:50%;background-size:cover;background-position:center;box-shadow:inset -6px -8px 14px rgba(0,0,0,.45),0 3px 8px rgba(0,0,0,.6);position:relative}
+.ball.sel{outline:4px solid var(--gold);outline-offset:3px}.ball.taken{opacity:.25}
+.ball.taken::after{content:attr(data-who);position:absolute;inset:auto 0 -4px;font-size:9px;font-weight:900;text-align:center;background:#000;border-radius:6px}
+.me{display:flex;align-items:center;gap:12px;background:var(--panel);border:2px solid var(--line);border-radius:12px;padding:10px}
+.me .ball{width:56px}.me b{font-size:18px;font-style:italic;text-transform:uppercase}.me span{display:block;color:var(--gold);font-size:12px;font-weight:800;letter-spacing:1px}
+.players{display:flex;flex-direction:column;gap:6px}
+.pl{display:flex;align-items:center;gap:10px;background:var(--panel);border-radius:10px;padding:8px 10px;font-weight:800}
+.pl .ball{width:28px}.pl .st{margin-left:auto;font-size:11px;letter-spacing:1px;padding:3px 8px;border-radius:6px;background:#2a2135;color:#b9b0c6}.pl .st.r{background:#3ddc84;color:#06200f}
+.pos{display:flex;align-items:center;justify-content:space-between;background:var(--panel);border-left:5px solid var(--red);padding:8px 12px;border-radius:8px}
+.pos b{font-size:40px;font-weight:900;font-style:italic}.pos span{color:var(--gold);font-weight:800;font-size:13px;letter-spacing:1px;text-transform:uppercase}
+.emotes{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.emo{aspect-ratio:1;font-size:34px;border-radius:16px;background:var(--panel);border:2px solid var(--line);display:flex;align-items:center;justify-content:center}
+.emo:active{transform:scale(.92);background:#2a2135}.emo.cool{opacity:.35}
+.cheer{padding:16px;border-radius:14px;background:linear-gradient(90deg,var(--pink),var(--red));font-weight:900;font-style:italic;font-size:22px;text-transform:uppercase;letter-spacing:2px}
+.msg{display:flex;gap:8px}.msg input{font-size:17px;padding:12px}.msg button{padding:0 16px;border-radius:10px;background:#fff;color:var(--red);font-weight:900}
+.cnt{font-size:11px;color:#8d839b;text-align:right;margin-top:-6px}
+.tilt{display:flex;align-items:center;justify-content:space-between;font-size:12px;color:#8d839b;border-top:1px solid var(--line);padding-top:8px}.tilt button{background:#2a2135;padding:6px 10px;border-radius:8px;font-weight:800;font-size:12px}
+.crown{font-size:64px;text-align:center;margin-top:6px}
+.won{text-align:center;font-weight:900;font-style:italic;font-size:30px;text-transform:uppercase;text-shadow:0 0 18px var(--gold)}
+.lost{text-align:center}.lost b{font-size:56px;font-style:italic}
+nav.demo{display:flex;gap:4px;justify-content:center;margin-top:10px;flex-wrap:wrap}nav.demo button{font-size:10px;padding:4px 7px;border-radius:6px;background:#1d1626;color:#8d839b}
+.toast{position:fixed;left:50%;top:18%;transform:translateX(-50%);background:#fff;color:var(--red);font-weight:900;padding:6px 14px;border-radius:8px;opacity:0;transition:opacity .2s;pointer-events:none}.toast.on{opacity:1}
+</style>
+</head>
+<body>
+<header><div class="wm">Damn Homie<small>Party · Osaka GP</small></div><div class="room" id="roomTag"><span class="dot warn"></span>·····</div></header>
+
+<section id="s-join" class="on">
+  <h2>Join the room</h2><p class="hint">Type the code on the TV, or scan its QR.</p>
+  <input class="code" id="code" maxlength="5" placeholder="CODE" autocomplete="off" autocapitalize="characters">
+  <input id="name" maxlength="10" placeholder="Your name" autocomplete="nickname">
+  <div style="flex:1"></div><button class="big" id="joinBtn">Join</button>
+</section>
+
+<section id="s-pick">
+  <h2>Pick your marble</h2><p class="hint">One each. Taken ones are greyed out.</p>
+  <div class="grid" id="grid"></div>
+  <button class="big" id="lockBtn">Lock it in</button>
+</section>
+
+<section id="s-ready">
+  <h2>Lobby</h2>
+  <div class="me"><div class="ball" id="meBall"></div><div><b id="meName">Jarod</b><span id="meMarble">GOLD</span></div></div>
+  <div class="players" id="players"></div>
+  <p class="hint">The host starts the race when everyone is ready.</p>
+  <div style="flex:1"></div><button class="big" id="readyBtn">Ready</button>
+</section>
+
+<section id="s-race">
+  <div class="pos"><div class="ball" id="raceBall" style="width:44px;margin-right:10px"></div><b id="rpos">P4</b><span id="rlap" style="margin-left:auto">Lap 2/3 · +0.21s</span></div>
+  <div class="emotes" id="emotes"></div>
+  <button class="cheer" data-send="cheer">Hype! 📣</button>
+  <div class="msg"><input id="bubble" maxlength="40" placeholder="Say it over your marble… (40)"><button id="bubbleGo">Send</button></div>
+  <div class="cnt"><span id="bcnt">0</span>/40</div>
+  <div class="tilt"><span>Tilt controls (party modes only)</span><button id="tiltBtn">Enable tilt</button></div>
+</section>
+
+<section id="s-win">
+  <div class="crown">👑</div><div class="won">You won the Osaka GP</div>
+  <p class="hint" style="text-align:center">Bragging rights: this goes up big on every screen.</p>
+  <input id="brag" maxlength="60" placeholder="Say something… (60)"><div class="cnt"><span id="gcnt">0</span>/60</div>
+  <div style="flex:1"></div><button class="big" id="bragGo">Send it</button>
+</section>
+
+<section id="s-lose">
+  <div class="lost"><b>P4</b><p class="hint">Gold Bull Skull won. Their message is on the TV.</p></div>
+  <div style="flex:1"></div><button class="big ready" id="againBtn">Back to the lobby</button>
+</section>
+
+
+<div class="toast" id="toast"></div>
+<script type="module">
+// Damn Homie Party phone controller (UI: Art Director; wiring: Claude Morty, T-034). Connects to the host browser over a WebRTC
+// data channel (PeerJS; its public broker only introduces the two ends). The phone only sends taps; the host runs the race.
+const $ = (id) => document.getElementById(id);
+const ID_PREFIX = 'dhmarbles-';
+const PEER_URLS = ['https://esm.sh/peerjs@1.5.4?bundle', 'https://cdn.jsdelivr.net/npm/peerjs@1.5.4/+esm'];
+const meId = (() => { try { let v = localStorage.getItem('dhc_id'); if (!v) { v = Math.random().toString(36).slice(2, 10); localStorage.setItem('dhc_id', v); } return v; } catch (e) { return Math.random().toString(36).slice(2, 10); } })();
+const DHC = {
+  peer: null, conn: null, room: '', me: { id: meId, name: '', marble: '' }, players: [], marbles: [], taken: {}, joined: false, retry: 0,
+  send(msg) { msg = { ...msg, from: this.me.id, room: this.room, t: Date.now() }; if (this.conn && this.conn.open) this.conn.send(msg); },
+  async connect() {
+    setStatus(false); toast('connecting…');
+    if (!this.peer) { let Peer; for (const u of PEER_URLS) { try { const m = await import(u); Peer = m.Peer || m.default; break; } catch (e) {} } if (!Peer) { toast('no internet?'); return; }
+      this.peer = new Peer(); await new Promise((ok, bad) => { this.peer.on('open', ok); this.peer.on('error', bad); }).catch((e) => { toast('matchmaker down'); this.peer = null; }); if (!this.peer) return;
+      this.peer.on('error', (e) => { if (e.type === 'peer-unavailable') { toast('no room ' + this.room); setStatus(false); } }); }
+    const c = this.peer.connect(ID_PREFIX + this.room, { reliable: true }); this.conn = c;
+    c.on('open', () => { this.retry = 0; setStatus(true); $('roomTag').lastChild.textContent = this.room; this.send({ type: 'join', name: this.me.name }); });
+    c.on('data', (m) => this.onMessage(typeof m === 'string' ? JSON.parse(m) : m));
+    c.on('close', () => { setStatus(false); if (this.joined && this.retry++ < 20) setTimeout(() => this.connect(), 1500); });
+  },
+  onMessage(msg) {
+    if (msg.type === 'welcome') { this.joined = true; this.me.marble = msg.marble; $('meName').textContent = msg.name; $('meName').style.color = msg.color; showMine(); if (msg.phase === 'race') go('race'); else if (!document.querySelector('#s-ready.on,#s-race.on,#s-win.on,#s-lose.on')) go('pick'); try { localStorage.setItem('dhc_room', this.room); localStorage.setItem('dhc_name', this.me.name); } catch (e) {} }
+    if (msg.type === 'full') toast('room is full');
+    if (msg.type === 'roster') { this.marbles = msg.marbles; this.taken = msg.taken || {}; renderGrid(); }
+    if (msg.type === 'lobby') { this.players = msg.players; const mine = msg.players.find((p) => p.id === this.me.id); if (mine) { this.me.marble = mine.marble; ready = mine.ready; paintReady(); showMine(); } renderPlayers(); }
+    if (msg.type === 'phase') { if (msg.phase === 'race') { go('race'); keepAwake(); } else if (msg.phase === 'lobby' && this.joined) go('ready'); }
+    if (msg.type === 'race') { $('rpos').textContent = 'P' + msg.pos; $('rlap').textContent = `Lap ${msg.lap} · ${msg.gap}`; }
+    if (msg.type === 'result') { if (msg.winner === this.me.id) go('win'); else { document.querySelector('#s-lose .lost b').textContent = 'P' + msg.pos; document.querySelector('#s-lose .lost .hint').textContent = `${msg.marble}${msg.winnerName && msg.winnerName !== msg.marble ? ' (' + msg.winnerName + ')' : ''} won.`; go('lose'); } navigator.vibrate?.([30, 60, 30]); }
+  },
+};
+window.DHC = DHC;
+function setStatus(ok) { document.querySelector('#roomTag .dot')?.classList.toggle('warn', !ok); }
+async function keepAwake() { try { DHC.wake = await navigator.wakeLock?.request('screen'); } catch (e) {} }
+function go(s) { document.querySelectorAll('section').forEach((x) => x.classList.toggle('on', x.id === 's-' + s)); }
+function toast(t) { const e = $('toast'); e.textContent = t; e.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(() => e.classList.remove('on'), 1400); }
+const img = (f) => `url(../marbles/thumbs/${f}.jpg)`;
+{ const q = new URLSearchParams(location.search); const r = q.get('room'); try { if (!r && localStorage.getItem('dhc_room')) $('code').value = localStorage.getItem('dhc_room'); $('name').value = localStorage.getItem('dhc_name') || ''; } catch (e) {} if (r) $('code').value = r.toUpperCase().slice(0, 5); }
+document.querySelectorAll('[data-go]').forEach((b) => b.addEventListener('click', () => go(b.dataset.go)));
+$('joinBtn').addEventListener('click', () => { const code = $('code').value.toUpperCase().replace(/[^A-Z]/g, ''); if (code.length !== 5) return toast('5-letter code from the TV'); DHC.room = code; DHC.me.name = clean($('name').value, 10) || 'Homie'; DHC.connect(); });
+// pick
+let sel = '';
+function renderGrid() {
+  const mineName = DHC.me.name;
+  $('grid').innerHTML = DHC.marbles.map(([f, n]) => { const who = DHC.taken[f]; const t = who && f !== DHC.me.marble; return `<div class="ball${t ? ' taken' : ''}${f === (sel || DHC.me.marble) ? ' sel' : ''}" data-f="${f}" data-who="${t ? who : ''}" style="background-image:${img(f)}" title="${n}"></div>`; }).join('');
+}
+$('grid').addEventListener('click', (e) => { const b = e.target.closest('.ball'); if (!b || b.classList.contains('taken')) return; sel = b.dataset.f; document.querySelectorAll('#grid .ball').forEach((x) => x.classList.toggle('sel', x === b)); DHC.send({ type: 'pick', marble: sel }); navigator.vibrate?.(10); });
+$('lockBtn').addEventListener('click', () => { go('ready'); });
+function showMine() { const f = DHC.me.marble; if (!f) return; const r = DHC.marbles.find((m) => m[0] === f); $('meBall').style.backgroundImage = img(f); $('raceBall').style.backgroundImage = img(f); $('meMarble').textContent = (r ? r[1] : f).toUpperCase(); }
+function renderPlayers() { $('players').innerHTML = DHC.players.filter((p) => p.id !== DHC.me.id).map((p) => `<div class="pl"${p.online ? '' : ' style="opacity:.4"'}><div class="ball" style="background-image:${img(p.marble)}"></div>${esc(p.name)}<span class="st${p.ready ? ' r' : ''}">${p.ready ? 'READY' : 'PICKING'}</span></div>`).join('') || '<p class="hint">Waiting for the others…</p>'; }
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+let ready = false;
+function paintReady() { $('readyBtn').classList.toggle('ready', ready); $('readyBtn').textContent = ready ? 'Ready ✓ (tap to undo)' : 'Ready'; }
+$('readyBtn').addEventListener('click', () => { ready = !ready; paintReady(); DHC.send({ type: 'ready', ready }); if (ready) keepAwake(); });
+$('againBtn').addEventListener('click', () => { ready = false; paintReady(); go('ready'); });
+// race: emotes (1 per 1.2 s; the host caps it too), hype, 40-char bubble
+const EMO = [['heart', '❤️'], ['kiss', '😘'], ['laugh', '😂'], ['fire', '🔥'], ['finger', '🖕'], ['cry', '😭'], ['shock', '😱'], ['crown', '👑']];
+$('emotes').innerHTML = EMO.map(([id, e]) => `<button class="emo" data-emo="${id}" aria-label="${id}">${e}</button>`).join('');
+let lastEmo = 0;
+const cool = () => { document.querySelectorAll('.emo').forEach((x) => x.classList.add('cool')); setTimeout(() => document.querySelectorAll('.emo').forEach((x) => x.classList.remove('cool')), 1200); };
+$('emotes').addEventListener('click', (e) => { const b = e.target.closest('.emo'); if (!b) return; const now = Date.now(); if (now - lastEmo < 1200) return toast('easy, homie'); lastEmo = now; DHC.send({ type: 'emote', emote: b.dataset.emo }); navigator.vibrate?.(15); cool(); });
+document.querySelector('[data-send="cheer"]').addEventListener('click', () => { const now = Date.now(); if (now - lastEmo < 1200) return toast('easy, homie'); lastEmo = now; DHC.send({ type: 'cheer' }); navigator.vibrate?.(25); toast('📣 HYPE'); cool(); });
+const BAD = ['fuck', 'fuk', 'fck', 'fack', 'phuk', 'phuck', 'biatch', 'btch', 'shit', 'bitch', 'cunt', 'dick', 'pussy', 'cock', 'fag', 'nigg', 'retard', 'whore', 'slut', 'twat', 'rape'];
+const clean = (s, max) => String(s).replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, max).split(/\s+/).map((w) => BAD.some((b) => w.toLowerCase().replace(/[@4]/g, 'a').replace(/3/g, 'e').replace(/[1!]/g, 'i').replace(/0/g, 'o').replace(/[5$]/g, 's').replace(/[^a-z]/g, '').includes(b)) ? '★'.repeat(Math.min(6, w.length)) : w).join(' ');
+$('bubble').addEventListener('input', (e) => ($('bcnt').textContent = e.target.value.length));
+$('bubbleGo').addEventListener('click', () => { const t = clean($('bubble').value, 40); if (!t) return; DHC.send({ type: 'bubble', text: t }); $('bubble').value = ''; $('bcnt').textContent = 0; toast('sent'); });
+$('tiltBtn').addEventListener('click', async () => {
+  try { if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission) { const r = await DeviceOrientationEvent.requestPermission(); if (r !== 'granted') return toast('tilt blocked'); } } catch (e) { return toast('tilt blocked'); }
+  let last = 0; addEventListener('deviceorientation', (e) => { const n = Date.now(); if (n - last < 66) return; last = n; DHC.send({ type: 'tilt', b: Math.round(e.beta || 0), g: Math.round(e.gamma || 0) }); });
+  $('tiltBtn').textContent = 'Tilt on ✓';
+});
+$('brag').addEventListener('input', (e) => ($('gcnt').textContent = e.target.value.length));
+$('bragGo').addEventListener('click', () => { const t = clean($('brag').value, 60); if (!t) return; DHC.send({ type: 'brag', msg: t }); toast('on the big screen'); });
+</script>
+</body>
+</html>

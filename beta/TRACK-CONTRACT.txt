@@ -1,0 +1,31 @@
+DAMN HOMIE MARBLES - OSAKA GP: TRACK CONTRACT (what the browser game reads from osaka_world.glb)
+Prototype v2, 2026-11-13. Cameras, TV director, blimp, replay and podium are all derived from these.
+Keep these names and the game adapts to a new layout with no code changes.
+
+REQUIRED
+  TRACK_floor               mesh(es). Rapier trimesh collider (friction 0.7). Also the last-resort centreline source.
+  TRACK_rail_inner_cyan     mesh(es). Trimesh collider (friction 0.15, bounce 0.35).
+  TRACK_rail_outer_pink     mesh(es). Trimesh collider.
+  SPAWN_01 .. SPAWN_NN      empties, grid slots. SPAWN_01 = pole (front). Up to 12 marbles are used.
+                            Travel direction is checked against SPAWN_01 minus the last spawn.
+  FINISH_LINE               empty ON the racing line at the line. Laps are counted here and the photo cam aims here.
+
+RACING LINE (first one found wins)
+  1. TRACK_centerline       PREFERRED for the new track. A mesh with only edges (exports as glTF LINES) or a line strip,
+                            closed loop, in or against travel order (order is auto-fixed from SPAWN order).
+                            Edges are chained automatically. Optional extras: dh_width (track width between rails, default 7).
+  2. TRACK_PATH extras      current track: extras.dh_path_yup = flat [x,y,z,...] Y-up polyline, extras.dh_width.
+                            (extras.dh_finish_index is only used if FINISH_LINE is missing.)
+  3. derived from TRACK_floor  angular bins around the floor centroid. Only OK for simple loops; don't rely on it.
+  The line is resampled to ~1.2-unit spacing. Width/2 is used for off-track resets, lane wander and camera offsets.
+
+OPTIONAL (used if present)
+  FX_dh_blimp               the blimp. The game animates its transform (follows the pack ~26 units up) and puts
+                            Blimp cam in its gondola. Local +X is treated as the nose.
+  FX_start_finish_gantry    fireworks launch from the top of its bounding box. Its legs block cameras, so keep them
+                            >= 1.5 units outside the rails.
+  Everything else           treated as camera occluders (TV and photo cams pick unobstructed spots by raycast).
+                            Not occluders: TRACK_floor, TRACK_rail*, TRACK_PATH, TRACK_centerline, FX_dh_blimp*, FX_pennants*.
+
+UNITS
+  1 unit = 1 marble diameter (radius 0.5). Gravity -24. Y-up in three.js (glTF default).

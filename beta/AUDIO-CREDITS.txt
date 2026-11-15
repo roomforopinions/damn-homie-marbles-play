@@ -1,0 +1,28 @@
+DAMN HOMIE MARBLES - OSAKA GP - AUDIO CREDITS (AD, T-027, 2026-11-13)
+Every shipped file lives in play-osaka\audio\. Only CC0 (public domain) sources were used; each license
+was checked on the source page / pack License.txt on 2026-11-13. Anything without a clear license was rejected.
+Processing (all files): trimmed, faded, peak or RMS normalized, loops equal-power crossfaded, re-encoded to MP3
+(mono 48-80 kbps for SFX/crowd, stereo 96 kbps for music). Attribution is not required for CC0 but is given here.
+
+FILE                 SOURCE (author - title)                                      LICENSE  URL
+roll.mp3             SquirmTheVerm - "Rolling Ball Loop" (freesound #260778)        CC0 1.0  https://freesound.org/people/SquirmTheVerm/sounds/260778/
+click1-3.mp3         Kenney - Impact Sounds: impactGlass_light_000/002/004.ogg      CC0 1.0  https://kenney.nl/assets/impact-sounds
+rail1-2.mp3          Kenney - Impact Sounds: impactPlate_light_000/002.ogg          CC0 1.0  https://kenney.nl/assets/impact-sounds
+lift_clack.mp3       Kenney - Impact Sounds: impactMetal_light_002.ogg              CC0 1.0  https://kenney.nl/assets/impact-sounds
+lift_whir.mp3        Kenney - Sci-fi Sounds: engineCircular_000.ogg                 CC0 1.0  https://kenney.nl/assets/sci-fi-sounds
+whoosh.mp3           qubodup - "Whoosh" (freesound #60013)                          CC0 1.0  https://freesound.org/people/qubodup/sounds/60013/
+crowd_amb.mp3        itmightgetloud - "CRWDReac-SOCCER_Millerntor Stadium Crowd      CC0 1.0  https://freesound.org/people/itmightgetloud/sounds/829454/
+                     Reaction General Ambience 01" (freesound #829454), 20-42 s excerpt
+crowd_swell.mp3      SoundsExciting - "Crowd Cheering" (freesound #365132)           CC0 1.0  https://freesound.org/people/SoundsExciting/sounds/365132/
+crowd_finish.mp3     FoolBoyMedia - "Crowd Cheer" (freesound #397434)                CC0 1.0  https://freesound.org/people/FoolBoyMedia/sounds/397434/
+beep.mp3             Kenney - Digital Audio: tone1.ogg (GO = same tone at 2x pitch)  CC0 1.0  https://kenney.nl/assets/digital-audio
+finish_stinger.mp3   Kenney - Music Jingles: jingles_SAX07.ogg                      CC0 1.0  https://kenney.nl/assets/music-jingles
+replay_sting.mp3     Kenney - Music Jingles: jingles_STEEL07.ogg                    CC0 1.0  https://kenney.nl/assets/music-jingles
+ui_click.mp3         Kenney - UI Audio: click1.ogg                                  CC0 1.0  https://kenney.nl/assets/ui-audio
+music.mp3            mistermender - "Upbeat loop" (freesound #512340)               CC0 1.0  https://freesound.org/people/mistermender/sounds/512340/
+
+Kenney packs: License.txt in each pack reads "Creative Commons Zero, CC0" (http://creativecommons.org/publicdomain/zero/1.0/).
+Freesound: each sound page above shows "Creative Commons 0". Files used were the official HQ previews.
+Evaluated but not shipped (also CC0): freesound #520192 code_box "Full of Energy", #381373 FunWithSound "Crowd Talking Quietly Stadium".
+Rejected: none needed; no CC-BY / NC / unclear-license material was used.
+Synth fallback: if a file fails to load, the old built-in WebAudio synth sounds play instead (no assets).

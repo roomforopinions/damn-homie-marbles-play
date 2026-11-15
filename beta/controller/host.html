@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Damn Homie · Host room screen (UI mockup)</title>
+<!-- Art Director design deliverable: the TV/host "join" screen for the phone-controller ticket. Static mockup.
+     The QR here is a placeholder pattern: Claude renders the real QR for  <pages-url>/controller/?room=CODE  (e.g. a ~4 KB QR lib, or the relay returns an SVG).
+     Platform layer: nothing here is race-specific except the GAME block (title + rules line), so future DH party games reuse it. -->
+<style>
+:root{--red:#e0102f;--gold:#ffb300;--ink:#0b0612;--panel:#16101f;--line:#2a2135}
+*{box-sizing:border-box}html,body{margin:0;height:100%;background:radial-gradient(ellipse at 70% 0%,#3a1030 0,#160c26 45%,#0b0612 100%);color:#fff;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden}
+.wrap{height:100%;display:grid;grid-template-columns:minmax(300px,1fr) minmax(320px,1.15fr);gap:4vw;padding:5vh 5vw;align-items:center}
+.wm{font-weight:900;font-style:italic;text-transform:uppercase;font-size:clamp(28px,4vw,56px);line-height:.92;text-shadow:4px 4px 0 var(--red)}
+.game{margin-top:14px;display:inline-block;background:#fff;color:var(--red);font-weight:900;font-style:italic;letter-spacing:3px;padding:5px 14px;box-shadow:4px 4px 0 var(--red);text-transform:uppercase}
+.how{margin-top:3vh;font-size:clamp(14px,1.4vw,19px);color:#d8cfe4;line-height:1.5}.how b{color:var(--gold)}
+.joinbox{display:flex;gap:3vw;align-items:center;margin-top:4vh}
+.qr{width:clamp(150px,17vw,260px);aspect-ratio:1;background:#fff;padding:12px;border-radius:10px;box-shadow:0 0 0 6px var(--red);position:relative}
+.qr canvas{width:100%;height:100%;image-rendering:pixelated}.qr span{position:absolute;bottom:-26px;left:0;right:0;text-align:center;font-size:10px;color:#8d839b;letter-spacing:2px}
+.code small{display:block;font-size:12px;letter-spacing:4px;color:var(--gold);font-weight:900}.code b{font-size:clamp(46px,7vw,110px);font-weight:900;font-style:italic;letter-spacing:10px;line-height:1}
+.code em{display:block;font-style:normal;color:#8d839b;font-size:13px;margin-top:6px}
+.slots{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.slot{background:rgba(22,16,31,.85);border:3px dashed var(--line);border-radius:16px;padding:16px;display:flex;align-items:center;gap:14px;min-height:96px}
+.slot.in{border:3px solid var(--pc,#fff);border-style:solid}.slot .ball{width:58px;height:58px;border-radius:50%;background:#2a2135 center/cover;box-shadow:inset -6px -8px 14px rgba(0,0,0,.45)}
+.slot b{font-size:22px;font-style:italic;text-transform:uppercase;display:block}.slot i{font-style:normal;font-size:12px;letter-spacing:2px;font-weight:900;color:#8d839b}.slot i.r{color:#3ddc84}
+.mode{margin-top:16px;display:flex;gap:10px}.mode div{flex:1;background:rgba(22,16,31,.85);border-radius:12px;padding:10px 12px;font-size:12px;color:#b9b0c6}.mode div b{display:block;color:#fff;font-size:14px;font-style:italic;text-transform:uppercase}.mode .on{box-shadow:0 0 0 3px var(--gold)}
+.start{margin-top:18px;width:100%;padding:20px;border:0;border-radius:14px;background:var(--red);color:#fff;font-weight:900;font-style:italic;font-size:26px;letter-spacing:2px;text-transform:uppercase;box-shadow:0 6px 0 #7a0016}
+.start[disabled]{background:#3a2a40;box-shadow:0 6px 0 #241a2a;color:#8d839b}
+.spec{margin-top:10px;font-size:12px;color:#8d839b;text-align:center}
+@media (max-aspect-ratio:1/1){.wrap{grid-template-columns:1fr;overflow:auto}.slots{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <div class="wm">Damn Homie<br>Party</div>
+    <div class="game" id="gameTitle">Game #1 · Osaka Grand Prix</div>
+    <div class="how">Grab your phone. Scan the code, or open the game link and type the room code.<br>Pick a marble, tap <b>Ready</b>. Phones are controllers only: the race runs here.</div>
+    <div class="joinbox">
+      <div class="qr"><canvas id="qr" width="29" height="29"></canvas><span>MOCK QR · real one encodes the room link</span></div>
+      <div class="code"><small>ROOM CODE</small><b id="code">KZ7QM</b><em>3 of 4 joined · 2 laptops watching</em></div>
+    </div>
+  </div>
+  <div>
+    <div class="slots" id="slots"></div>
+    <div class="mode"><div class="on"><b>Game night</b>this screen hosts, phones in the room</div><div><b>Remote</b>friends open the room link on a laptop to watch the same race (state stream), phones still control</div></div>
+    <button class="start" id="start" disabled>Waiting for everyone to be ready…</button>
+    <div class="spec">Host starts when all players are ready. Emotes, hype and short messages pop over each player's marble during the race.</div>
+  </div>
+</div>
+<script>
+const P = [['JAROD', 'gold', '#ffb300', 1], ['MIA', 'lava', '#00e5ff', 1], ['DEV', 'dh09_pink_bear', '#ff2d95', 0], null];
+document.getElementById('slots').innerHTML = P.map((p, i) => p ? `<div class="slot in" style="--pc:${p[2]}"><div class="ball" style="background-image:url(../marbles/${p[1]}.jpg)"></div><div><b>${p[0]}</b><i class="${p[3] ? 'r' : ''}">${p[3] ? 'READY ✓' : 'PICKING…'}</i></div></div>` : `<div class="slot"><div class="ball"></div><div><b style="color:#5a4d66">Player ${i + 1}</b><i>SCAN TO JOIN</i></div></div>`).join('');
+// placeholder QR-looking pattern (finder squares + noise), NOT a real QR
+const c = document.getElementById('qr').getContext('2d'); c.fillStyle = '#fff'; c.fillRect(0, 0, 29, 29); c.fillStyle = '#0b0612';
+let s = 7; const r = () => (s = (s * 16807) % 2147483647) / 2147483647;
+for (let y = 0; y < 29; y++) for (let x = 0; x < 29; x++) if (r() < 0.45) c.fillRect(x, y, 1, 1);
+for (const [x, y] of [[0, 0], [22, 0], [0, 22]]) { c.fillStyle = '#fff'; c.fillRect(x, y, 7, 7); c.fillStyle = '#0b0612'; c.fillRect(x, y, 7, 7); c.fillStyle = '#fff'; c.fillRect(x + 1, y + 1, 5, 5); c.fillStyle = '#e0102f'; c.fillRect(x + 2, y + 2, 3, 3); c.fillStyle = '#0b0612'; }
+</script>
+</body>
+</html>
