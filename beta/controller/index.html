@@ -133,7 +133,7 @@ const DHC = {
     if (msg.type === 'full') toast('room is full');
     if (msg.type === 'roster') { this.marbles = msg.marbles; this.taken = msg.taken || {}; renderGrid(); }
     if (msg.type === 'lobby') { this.players = msg.players; const mine = msg.players.find((p) => p.id === this.me.id); if (mine) { this.me.marble = mine.marble; ready = mine.ready; paintReady(); showMine(); } renderPlayers(); }
-    if (msg.type === 'phase') { if (msg.phase === 'race') { go('race'); keepAwake(); } else if (msg.phase === 'lobby' && this.joined) go('ready'); }
+    if (msg.type === 'phase') { if (msg.phase === 'race') { go('race'); keepAwake(); } else if (msg.phase === 'lobby' && this.joined && document.querySelector('#s-race.on,#s-win.on,#s-lose.on')) go('ready'); }
     if (msg.type === 'race') { $('rpos').textContent = 'P' + msg.pos; $('rlap').textContent = `Lap ${msg.lap} · ${msg.gap}`; }
     if (msg.type === 'result') { if (msg.winner === this.me.id) go('win'); else { document.querySelector('#s-lose .lost b').textContent = 'P' + msg.pos; document.querySelector('#s-lose .lost .hint').textContent = `${msg.marble}${msg.winnerName && msg.winnerName !== msg.marble ? ' (' + msg.winnerName + ')' : ''} won.`; go('lose'); } navigator.vibrate?.([30, 60, 30]); }
   },
