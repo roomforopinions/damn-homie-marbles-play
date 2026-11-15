@@ -92,11 +92,12 @@ nav.demo{display:flex;gap:4px;justify-content:center;margin-top:10px;flex-wrap:w
   <p class="hint" style="text-align:center">Bragging rights: this goes up big on every screen.</p>
   <input id="brag" maxlength="60" placeholder="Say something… (60)"><div class="cnt"><span id="gcnt">0</span>/60</div>
   <div style="flex:1"></div><button class="big" id="bragGo">Send it</button>
+  <button class="big ready" id="againBtn2" style="margin-top:10px">Run it back 🔁</button>
 </section>
 
 <section id="s-lose">
   <div class="lost"><b>P4</b><p class="hint">Gold Bull Skull won. Their message is on the TV.</p></div>
-  <div style="flex:1"></div><button class="big ready" id="againBtn">Back to the lobby</button>
+  <div style="flex:1"></div><button class="big ready" id="againBtn">Run it back 🔁</button>
 </section>
 
 
@@ -133,8 +134,8 @@ const DHC = {
     if (msg.type === 'full') toast('room is full');
     if (msg.type === 'roster') { this.marbles = msg.marbles; this.taken = msg.taken || {}; renderGrid(); }
     if (msg.type === 'lobby') { this.players = msg.players; const mine = msg.players.find((p) => p.id === this.me.id); if (mine) { this.me.marble = mine.marble; ready = mine.ready; paintReady(); showMine(); } renderPlayers(); }
-    if (msg.type === 'phase') { if (msg.phase === 'race') { go('race'); keepAwake(); } else if (msg.phase === 'lobby' && this.joined && document.querySelector('#s-race.on,#s-win.on,#s-lose.on')) go('ready'); }
-    if (msg.type === 'race') { $('rpos').textContent = 'P' + msg.pos; $('rlap').textContent = `Lap ${msg.lap} · ${msg.gap}`; }
+    if (msg.type === 'phase') { if (msg.phase === 'race') { this.lastPos = 0; go('race'); keepAwake(); } else if (msg.phase === 'lobby' && this.joined && document.querySelector('#s-race.on,#s-win.on,#s-lose.on')) go('ready'); }
+    if (msg.type === 'race') { if (this.lastPos && msg.pos < this.lastPos) { navigator.vibrate?.([20, 40, 20]); toast('▲ P' + msg.pos + '!'); } else if (this.lastPos && msg.pos > this.lastPos) navigator.vibrate?.(60); this.lastPos = msg.pos; $('rpos').textContent = 'P' + msg.pos; $('rlap').textContent = `Lap ${msg.lap} · ${msg.gap}`; }
     if (msg.type === 'result') { if (msg.winner === this.me.id) go('win'); else { document.querySelector('#s-lose .lost b').textContent = 'P' + msg.pos; document.querySelector('#s-lose .lost .hint').textContent = `${msg.marble}${msg.winnerName && msg.winnerName !== msg.marble ? ' (' + msg.winnerName + ')' : ''} won.`; go('lose'); } navigator.vibrate?.([30, 60, 30]); }
   },
 };
@@ -168,7 +169,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 let ready = false;
 function paintReady() { $('readyBtn').classList.toggle('ready', ready); $('readyBtn').textContent = ready ? 'Ready ✓ (tap to undo)' : 'Ready'; }
 $('readyBtn').addEventListener('click', () => { ready = !ready; paintReady(); DHC.send({ type: 'ready', ready }); if (ready) keepAwake(); });
-$('againBtn').addEventListener('click', () => { ready = false; paintReady(); go('ready'); });
+const again = () => { ready = true; paintReady(); go('ready'); DHC.send({ type: 'ready', ready: true }); toast('ready for the next one'); }; $('againBtn').addEventListener('click', again); $('againBtn2').addEventListener('click', again);
 // race: emotes (1 per 1.2 s; the host caps it too), hype, 40-char bubble
 const EMO = [['heart', '❤️'], ['kiss', '😘'], ['laugh', '😂'], ['fire', '🔥'], ['finger', '🖕'], ['cry', '😭'], ['shock', '😱'], ['crown', '👑']];
 $('emotes').innerHTML = EMO.map(([id, e]) => `<button class="emo" data-emo="${id}" aria-label="${id}">${e}</button>`).join('');

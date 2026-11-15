@@ -2085,4 +2085,4 @@ window.__dh.tv6 = { probe: (on = true) => { TV6P.on = on; TV6P.vp = null; }, res
   time: () => ({ ...TV6T }), fails: () => ({ n: TV6.fails || 0, log: TV6.failLog || [] }) };
 const TV6T = { close: 0, n: 0 };
 // ---------- /AD TV r6 ----------
-import('./net.js?v=5').catch((e) => console.warn('[party] phone controllers unavailable', e)); // Claude T-034: phone controllers (host side)
+import('./net.js?v=6').catch((e) => console.warn('[party] phone controllers unavailable', e)); // Claude T-034: phone controllers (host side)

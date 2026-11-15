@@ -142,7 +142,7 @@ function onPhone(conn, msg) {
       try { localStorage.setItem('dh_osaka_field2', JSON.stringify(D.FIELD)); } catch (e) {}
       syncSession(); pushLobby(); break;
     }
-    case 'ready': p.ready = !!msg.ready; if (p.ready) toastHost(`✅ ${p.name} is ready`); pushLobby(); break;
+    case 'ready': { p.ready = !!msg.ready; if (p.ready) toastHost(`✅ ${p.name} is ready`); pushLobby(); const on = [...party.phones.values()].filter((o) => o.online); if (p.ready && on.length && on.every((o) => o.ready) && !racing()) { toastHost('🏁 Everyone is ready: press Start'); party.open = true; panel.classList.add('on'); renderLobby(); } break; }
     case 'emote': case 'cheer': { if (now - p.lastEmo < EMOTE_GAP) return; p.lastEmo = now; const e = EMO[msg.type === 'cheer' ? 'cheer' : msg.emote]; if (e) floatOver(p, e, 'emote'); if (msg.type === 'cheer') D.sfx?.roar?.(0.08, 1.5); break; }
     case 'bubble': { if (now - p.lastBub < BUBBLE_GAP) return; p.lastBub = now; const t = clean(msg.text, 40); if (t) floatOver(p, t, 'bubble'); break; }
     case 'brag': { const w = D.race.finishOrder[0]; if (w && w.k === p.k && window.DHBrag) window.DHBrag.receive({ type: 'brag', msg: clean(msg.msg, 60), by: p.name, marble: w.name, t: now }); break; }
@@ -179,7 +179,7 @@ function netTick() { // timer, not rAF: keeps phones updated even if the host ta
   // race state to phones, ~3 Hz; phase changes immediately
   const now = performance.now(), ph = phaseNow();
   if (party.phones.size && (ph !== party.lastPhase || now - party.lastSent > 330)) {
-    if (ph !== party.lastPhase) { party.lastPhase = ph; sendAll({ type: 'phase', phase: ph }); if (ph === 'lobby') { for (const p of party.phones.values()) p.ready = false; pushLobby(); } }
+    if (ph !== party.lastPhase) { party.lastPhase = ph; sendAll({ type: 'phase', phase: ph }); if (ph === 'race') { for (const p of party.phones.values()) p.ready = false; } if (ph === 'lobby') pushLobby(); }
     party.lastSent = now;
     if (ph === 'race') {
       const st = D.standings(), lead = st[0];
