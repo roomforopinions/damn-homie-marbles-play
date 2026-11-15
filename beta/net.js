@@ -26,7 +26,7 @@ window.DHParty = party;
 
 // ---------- UI ----------
 const css = document.createElement('style');
-css.textContent = `#dhpBtn{position:fixed;left:12px;bottom:12px;z-index:30;font:700 15px/1 system-ui,sans-serif;padding:10px 14px;border-radius:12px;border:0;background:#ff2d95;color:#fff;box-shadow:0 4px 16px #0008;cursor:pointer}
+css.textContent = `#dhpBtn{position:fixed;right:max(8px,env(safe-area-inset-right));top:calc(max(8px,env(safe-area-inset-top)) + 26px);z-index:30;font:700 14px/1 system-ui,sans-serif;padding:8px 12px;border-radius:12px;border:0;background:#ff2d95;color:#fff;box-shadow:0 4px 16px #0008;cursor:pointer}
 #dhpPanel{position:fixed;inset:0;z-index:31;display:none;align-items:center;justify-content:center;background:#05040acc;backdrop-filter:blur(4px);font-family:system-ui,sans-serif;color:#fff}
 #dhpPanel.on{display:flex}#dhpBox{background:#16131f;border-radius:20px;padding:22px 26px;width:min(820px,94vw);display:grid;grid-template-columns:auto 1fr;gap:22px;box-shadow:0 10px 40px #000a}
 #dhpQR{width:220px;height:220px;background:#fff;border-radius:12px;display:grid;place-items:center;color:#000;font-size:13px;overflow:hidden}#dhpQR img,#dhpQR svg{width:100%;height:100%}
@@ -39,7 +39,7 @@ css.textContent = `#dhpBtn{position:fixed;left:12px;bottom:12px;z-index:30;font:
 .dhpB{position:absolute;transform:translate(-50%,-100%);background:#fff;color:#111;font:800 18px system-ui;padding:6px 12px;border-radius:14px;white-space:nowrap;box-shadow:0 3px 12px #0008}.dhpB:after{content:'';position:absolute;left:50%;bottom:-8px;border:8px solid transparent;border-top-color:#fff;border-bottom:0;transform:translateX(-50%)}
 .dhpTag{position:absolute;transform:translate(-50%,-100%);font:900 13px system-ui;padding:2px 7px;border-radius:7px;color:#000;white-space:nowrap}`;
 css.textContent += `#dhpToast{position:fixed;top:14px;left:50%;transform:translateX(-50%) translateY(-120%);z-index:32;background:#16131f;color:#fff;font:800 22px system-ui;padding:12px 22px;border-radius:14px;box-shadow:0 6px 24px #000a;border:2px solid #2bd46a;transition:transform .25s}#dhpToast.on{transform:translateX(-50%) translateY(0)}
-#dhpStrip{position:fixed;left:12px;bottom:60px;z-index:30;display:flex;flex-direction:column;gap:6px;pointer-events:none}.dhpS{display:flex;align-items:center;gap:7px;background:#16131fd9;color:#fff;font:800 14px system-ui;padding:5px 10px 5px 6px;border-radius:999px}.dhpS i{width:10px;height:10px;border-radius:50%;background:#2bd46a;box-shadow:0 0 8px #2bd46a}.dhpS.off i{background:#777;box-shadow:none}.dhpS .b{width:22px;height:22px;border-radius:50%;background:#333 center/cover}.dhpS small{opacity:.7;font-weight:700}`;
+#dhpStrip{position:fixed;right:max(8px,env(safe-area-inset-right));top:calc(max(8px,env(safe-area-inset-top)) + 66px);z-index:30;display:flex;flex-direction:column;align-items:flex-end;gap:5px;pointer-events:none}#dhpBtn.racing{display:none}#dhpStrip.racing{top:calc(max(8px,env(safe-area-inset-top)) + 26px)}.dhpS{display:flex;align-items:center;gap:7px;background:#16131fd9;color:#fff;font:800 14px system-ui;padding:5px 10px 5px 6px;border-radius:999px}.dhpS i{width:10px;height:10px;border-radius:50%;background:#2bd46a;box-shadow:0 0 8px #2bd46a}.dhpS.off i{background:#777;box-shadow:none}.dhpS .b{width:22px;height:22px;border-radius:50%;background:#333 center/cover}.dhpS small{opacity:.7;font-weight:700}`;
 document.head.appendChild(css);
 const btn = Object.assign(document.createElement('button'), { id: 'dhpBtn', textContent: '📱 Party (phones)' });
 const panel = Object.assign(document.createElement('div'), { id: 'dhpPanel' });
@@ -175,6 +175,7 @@ function tick() {
   requestAnimationFrame(tick);
 }
 function netTick() { // timer, not rAF: keeps phones updated even if the host tab is in the background
+  { const r = racing(); btn.classList.toggle('racing', r); strip.classList.toggle('racing', r); }
   // race state to phones, ~3 Hz; phase changes immediately
   const now = performance.now(), ph = phaseNow();
   if (party.phones.size && (ph !== party.lastPhase || now - party.lastSent > 330)) {

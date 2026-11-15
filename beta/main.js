@@ -2025,4 +2025,4 @@ window.__dh.tv6 = { probe: (on = true) => { TV6P.on = on; TV6P.vp = null; }, res
   centerK: () => { let b = -1, bd = 9; for (const m of marbles) { const v = m.mesh.position.clone().project(camera); const d = Math.hypot(v.x, v.y); if (v.z < 1 && d < bd) { bd = d; b = m.k; } } return b; },
   occCount: () => tv6Occ.length };
 // ---------- /AD TV r6 ----------
-import('./net.js?v=3').catch((e) => console.warn('[party] phone controllers unavailable', e)); // Claude T-034: phone controllers (host side)
+import('./net.js?v=4').catch((e) => console.warn('[party] phone controllers unavailable', e)); // Claude T-034: phone controllers (host side)
