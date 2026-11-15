@@ -1,12 +1,13 @@
 // Damn Homie Party: phone controllers, host side (Claude Morty, T-034). Game-agnostic lobby layer + the Osaka GP adapter.
 // The browser running the race is the host. Phones open controller/?room=CODE (QR on screen), pick a marble, tap Ready and
 // send emotes / hype / a 40-char bubble; the winner's phone can send the bragging line. Phones never run the race.
-// Transport: WebRTC data channels via PeerJS (its free public broker only introduces the peers; no account, no server of ours).
-// The host's peer id is 'dhmarbles-' + room code. Messages are small JSON objects; see controller/index.html for the phone side.
+// Transport: a WebSocket relay (MQTT over wss on free public brokers, no account); see the transport section. Messages are small
+// JSON objects; see controller/index.html for the phone side.
 const D = window.__dh;
-const PEER_URLS = ['https://esm.sh/peerjs@1.5.4?bundle', 'https://cdn.jsdelivr.net/npm/peerjs@1.5.4/+esm'];
+const MQTT_URLS = ['https://esm.sh/mqtt@5.10.1?bundle', 'https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.esm.js'];
+const BROKERS = ['wss://broker.hivemq.com:8884/mqtt', 'wss://broker.emqx.io:8084/mqtt'];
+const TOPIC = 'dhmarbles/v1/';
 const QR_URLS = ['https://esm.sh/qrcode-generator@1.4.4', 'https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/+esm'];
-const ID_PREFIX = 'dhmarbles-';
 const MAX_PHONES = 8, EMOTE_GAP = 1200, BUBBLE_GAP = 2500;
 const EMO = { heart: '❤️', kiss: '😘', laugh: '😂', fire: '🔥', finger: '🖕', cry: '😭', shock: '😱', crown: '👑', cheer: '📣' };
 const BAD = ['fuck', 'fuk', 'fck', 'fack', 'phuk', 'phuck', 'biatch', 'btch', 'shit', 'bitch', 'cunt', 'dick', 'pussy', 'cock', 'fag', 'nigg', 'retard', 'whore', 'slut', 'twat', 'wank', 'kike', 'spic', 'chink', 'tranny', 'rape'];
@@ -17,7 +18,7 @@ const newCode = () => Array.from({ length: 5 }, () => CODE_ABC[Math.floor(Math.r
 async function firstImport(urls) { let err; for (const u of urls) { try { return await import(u); } catch (e) { err = e; } } throw err; }
 
 const party = {
-  peer: null, code: '', open: false, phones: new Map(), // phone id -> { id, name, conn, k, ready, online, lastEmo, lastBub, color }
+  clients: null, code: '', open: false, phones: new Map(), // phone id -> { id, name, conn, k, ready, online, lastEmo, lastBub, color }
   status: 'off', lastPhase: '', lastSent: 0,
   joinUrl() { const u = new URL('controller/', location.href); u.search = '?room=' + this.code; return u.href; },
 };
@@ -37,6 +38,8 @@ css.textContent = `#dhpBtn{position:fixed;left:12px;bottom:12px;z-index:30;font:
 #dhpFx{position:fixed;inset:0;pointer-events:none;z-index:6;overflow:hidden}.dhpE{position:absolute;transform:translate(-50%,-100%);font-size:44px;text-shadow:0 2px 8px #000;transition:opacity .4s}
 .dhpB{position:absolute;transform:translate(-50%,-100%);background:#fff;color:#111;font:800 18px system-ui;padding:6px 12px;border-radius:14px;white-space:nowrap;box-shadow:0 3px 12px #0008}.dhpB:after{content:'';position:absolute;left:50%;bottom:-8px;border:8px solid transparent;border-top-color:#fff;border-bottom:0;transform:translateX(-50%)}
 .dhpTag{position:absolute;transform:translate(-50%,-100%);font:900 13px system-ui;padding:2px 7px;border-radius:7px;color:#000;white-space:nowrap}`;
+css.textContent += `#dhpToast{position:fixed;top:14px;left:50%;transform:translateX(-50%) translateY(-120%);z-index:32;background:#16131f;color:#fff;font:800 22px system-ui;padding:12px 22px;border-radius:14px;box-shadow:0 6px 24px #000a;border:2px solid #2bd46a;transition:transform .25s}#dhpToast.on{transform:translateX(-50%) translateY(0)}
+#dhpStrip{position:fixed;left:12px;bottom:60px;z-index:30;display:flex;flex-direction:column;gap:6px;pointer-events:none}.dhpS{display:flex;align-items:center;gap:7px;background:#16131fd9;color:#fff;font:800 14px system-ui;padding:5px 10px 5px 6px;border-radius:999px}.dhpS i{width:10px;height:10px;border-radius:50%;background:#2bd46a;box-shadow:0 0 8px #2bd46a}.dhpS.off i{background:#777;box-shadow:none}.dhpS .b{width:22px;height:22px;border-radius:50%;background:#333 center/cover}.dhpS small{opacity:.7;font-weight:700}`;
 document.head.appendChild(css);
 const btn = Object.assign(document.createElement('button'), { id: 'dhpBtn', textContent: '📱 Party (phones)' });
 const panel = Object.assign(document.createElement('div'), { id: 'dhpPanel' });
@@ -45,15 +48,19 @@ panel.innerHTML = `<div id="dhpBox"><div><div id="dhpQR">loading…</div></div><
   <div id="dhpUrl"></div><div style="font-weight:700">Scan with your phone camera, pick a marble, tap Ready.</div>
   <div id="dhpList"></div><button id="dhpStart" disabled>Start race</button><button id="dhpClose">Close</button><div id="dhpStat"></div></div></div>`;
 const fx = Object.assign(document.createElement('div'), { id: 'dhpFx' });
-document.body.append(btn, panel, fx);
+const hostToast = Object.assign(document.createElement('div'), { id: 'dhpToast' }); const strip = Object.assign(document.createElement('div'), { id: 'dhpStrip' });
+document.body.append(btn, panel, fx, hostToast, strip);
+function toastHost(t) { hostToast.textContent = t; hostToast.classList.add('on'); clearTimeout(toastHost.t); toastHost.t = setTimeout(() => hostToast.classList.remove('on'), 2600); }
 const $ = (id) => document.getElementById(id);
-btn.onclick = () => { party.open = true; panel.classList.add('on'); if (!party.peer) startHost(); renderLobby(); };
+btn.onclick = () => { party.open = true; panel.classList.add('on'); if (!party.clients) startHost(); renderLobby(); };
 $('dhpClose').onclick = () => { party.open = false; panel.classList.remove('on'); };
 $('dhpStart').onclick = () => { panel.classList.remove('on'); party.open = false; D.start(); };
 for (const ev of ['keydown', 'keyup', 'pointerdown', 'wheel']) panel.addEventListener(ev, (e) => e.stopPropagation());
 
 const thumb = (k) => { const r = D.ROSTER[D.FIELD[k]]; return r ? `marbles/thumbs/${r[0]}.jpg` : ''; };
+function renderStrip() { strip.innerHTML = [...party.phones.values()].map((p) => `<div class="dhpS${p.online ? '' : ' off'}"><div class="b" style="background-image:url(${thumb(p.k)})"></div><i></i><span style="color:${p.color}">${esc(p.name)}</span><small>${!p.online ? 'offline' : p.ready ? 'ready' : 'paired'}</small></div>`).join(''); btn.textContent = party.phones.size ? `📱 Party · ${[...party.phones.values()].filter((p) => p.online).length} paired` : '📱 Party (phones)'; }
 function renderLobby() {
+  renderStrip();
   $('dhpCode').textContent = party.code || '·····';
   $('dhpUrl').textContent = party.code ? party.joinUrl() : '';
   const ps = [...party.phones.values()];
@@ -68,22 +75,32 @@ async function drawQR() {
   catch (e) { $('dhpQR').textContent = 'QR unavailable: type the code at ' + new URL('controller/', location.href).href; }
 }
 
-// ---------- transport ----------
-async function startHost(tries = 0) {
+// ---------- transport: WebSocket relay (MQTT over wss on free public brokers) ----------
+// Every phone and the host keep one live WebSocket to a public MQTT broker; messages are pushed (no polling) on topics under
+// dhmarbles/v1/<CODE>. Works through any home router or phone network (no peer-to-peer hole punching). The host listens on two
+// brokers at once; a phone uses the first one it reaches. Heartbeats every 2 s drive the "paired" indicators on both ends.
+async function startHost() {
   party.status = 'connecting'; renderLobby();
-  let Peer; try { const m = await firstImport(PEER_URLS); Peer = m.Peer || m.default; } catch (e) { party.status = 'error'; renderLobby(); console.warn('[party] PeerJS load failed', e); return; }
-  party.code = newCode();
-  const peer = new Peer(ID_PREFIX + party.code, { debug: 1 });
-  party.peer = peer;
-  peer.on('open', () => { party.status = 'live'; renderLobby(); drawQR(); console.log('[party] room', party.code, party.joinUrl()); });
-  peer.on('error', (e) => { console.warn('[party]', e.type, e.message); if (e.type === 'unavailable-id' && tries < 4) { peer.destroy(); party.peer = null; startHost(tries + 1); } else if (e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error') { party.status = 'error'; renderLobby(); } });
-  peer.on('disconnected', () => { try { peer.reconnect(); } catch (e) {} });
-  peer.on('connection', (conn) => {
-    conn.on('data', (msg) => { try { onPhone(conn, typeof msg === 'string' ? JSON.parse(msg) : msg); } catch (e) { console.warn('[party] bad msg', e); } });
-    conn.on('close', () => { for (const p of party.phones.values()) if (p.conn === conn) { p.online = false; renderLobby(); } });
+  let mqtt; try { const m = await firstImport(MQTT_URLS); mqtt = m.default?.connect ? m.default : m.connect ? m : m.default; } catch (e) { party.status = 'error'; renderLobby(); console.warn('[party] MQTT load failed', e); return; }
+  party.code = newCode(); const base = TOPIC + party.code;
+  party.clients = BROKERS.map((url) => {
+    const c = mqtt.connect(url, { clientId: 'dhh_' + party.code + '_' + Math.random().toString(36).slice(2, 7), clean: true, reconnectPeriod: 2000, connectTimeout: 8000, keepalive: 20 });
+    c.on('connect', () => { c.subscribe(base + '/up'); if (party.status !== 'live') { party.status = 'live'; renderLobby(); drawQR(); console.log('[party] room', party.code, party.joinUrl(), 'via', url); } });
+    c.on('message', (topic, buf) => { try { const msg = JSON.parse(buf.toString()); onPhone(connFor(msg.from), msg); } catch (e) { console.warn('[party] bad msg', e); } });
+    c.on('error', (e) => console.warn('[party]', url, e?.message || e));
+    return c;
   });
+  setTimeout(() => { if (party.status !== 'live') { party.status = 'error'; renderLobby(); } }, 15000);
+  setInterval(() => { // heartbeat to every phone + offline detection
+    pub(base + '/all', { type: 'hb', code: party.code, n: party.phones.size });
+    const now = Date.now(); let changed = false;
+    for (const p of party.phones.values()) { const on = now - (p.seen || 0) < 7000; if (on !== p.online) { p.online = on; changed = true; if (!on) toastHost(`📴 ${p.name} dropped`); } }
+    if (changed) pushLobby();
+  }, 2000);
 }
-const send = (p, msg) => { try { if (p.online && p.conn?.open) p.conn.send(msg); } catch (e) {} };
+function pub(topic, msg) { const data = JSON.stringify(msg); for (const c of party.clients || []) if (c.connected) c.publish(topic, data); }
+function connFor(id) { id = String(id || '').slice(0, 16); return { send: (msg) => pub(TOPIC + party.code + '/down/' + id, msg), open: true }; }
+const send = (p, msg) => { try { if (p.online) p.conn.send(msg); } catch (e) {} };
 const sendAll = (msg) => { for (const p of party.phones.values()) send(p, msg); };
 
 // ---------- Osaka GP adapter: phones map to session.players and marble slots ----------
@@ -107,11 +124,14 @@ function onPhone(conn, msg) {
       const k = freeSlot(); if (k < 0) { conn.send({ type: 'full' }); return; }
       p = { id, name, conn, k, ready: false, picked: false, online: true, lastEmo: 0, lastBub: 0, color: D.PCOLORS[party.phones.size % D.PCOLORS.length] };
       party.phones.set(id, p);
-    } else Object.assign(p, { conn, online: true, name }); // rejoin after a dropped connection keeps the same marble
+      toastHost(`📱 ${name} joined`);
+    } else { if (!p.online) toastHost(`📱 ${name} is back`); Object.assign(p, { conn, online: true, name }); } // rejoin after a dropped connection keeps the same marble
+    p.seen = Date.now();
     send(p, { type: 'welcome', you: id, name: p.name, color: p.color, marble: D.ROSTER[D.FIELD[p.k]][0], phase: phaseNow() });
     syncSession(); pushLobby(); return;
   }
-  if (!p) return; p.conn = conn; p.online = true;
+  if (!p) { if (msg.type !== 'ping') conn.send({ type: 'rejoin' }); return; } p.conn = conn; p.seen = Date.now(); if (!p.online) { p.online = true; pushLobby(); }
+  if (msg.type === 'ping') return;
   const now = Date.now();
   switch (msg.type) {
     case 'pick': {
@@ -122,7 +142,7 @@ function onPhone(conn, msg) {
       try { localStorage.setItem('dh_osaka_field2', JSON.stringify(D.FIELD)); } catch (e) {}
       syncSession(); pushLobby(); break;
     }
-    case 'ready': p.ready = !!msg.ready; pushLobby(); break;
+    case 'ready': p.ready = !!msg.ready; if (p.ready) toastHost(`✅ ${p.name} is ready`); pushLobby(); break;
     case 'emote': case 'cheer': { if (now - p.lastEmo < EMOTE_GAP) return; p.lastEmo = now; const e = EMO[msg.type === 'cheer' ? 'cheer' : msg.emote]; if (e) floatOver(p, e, 'emote'); if (msg.type === 'cheer') D.sfx?.roar?.(0.08, 1.5); break; }
     case 'bubble': { if (now - p.lastBub < BUBBLE_GAP) return; p.lastBub = now; const t = clean(msg.text, 40); if (t) floatOver(p, t, 'bubble'); break; }
     case 'brag': { const w = D.race.finishOrder[0]; if (w && w.k === p.k && window.DHBrag) window.DHBrag.receive({ type: 'brag', msg: clean(msg.msg, 60), by: p.name, marble: w.name, t: now }); break; }

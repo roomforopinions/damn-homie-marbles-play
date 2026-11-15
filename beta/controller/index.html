@@ -73,6 +73,7 @@ nav.demo{display:flex;gap:4px;justify-content:center;margin-top:10px;flex-wrap:w
   <h2>Lobby</h2>
   <div class="me"><div class="ball" id="meBall"></div><div><b id="meName">Jarod</b><span id="meMarble">GOLD</span></div></div>
   <div class="players" id="players"></div>
+  <p class="hint" id="pairLobby" style="font-weight:800">● Paired with the TV</p>
   <p class="hint">The host starts the race when everyone is ready.</p>
   <div style="flex:1"></div><button class="big" id="readyBtn">Ready</button>
 </section>
@@ -101,27 +102,34 @@ nav.demo{display:flex;gap:4px;justify-content:center;margin-top:10px;flex-wrap:w
 
 <div class="toast" id="toast"></div>
 <script type="module">
-// Damn Homie Party phone controller (UI: Art Director; wiring: Claude Morty, T-034). Connects to the host browser over a WebRTC
-// data channel (PeerJS; its public broker only introduces the two ends). The phone only sends taps; the host runs the race.
+// Damn Homie Party phone controller (UI: Art Director; wiring: Claude Morty, T-034). Talks to the host browser through a
+// WebSocket relay (MQTT over wss, free public brokers, no account). The phone only sends taps; the host runs the race.
 const $ = (id) => document.getElementById(id);
-const ID_PREFIX = 'dhmarbles-';
-const PEER_URLS = ['https://esm.sh/peerjs@1.5.4?bundle', 'https://cdn.jsdelivr.net/npm/peerjs@1.5.4/+esm'];
+const TOPIC = 'dhmarbles/v1/';
+const MQTT_URLS = ['https://esm.sh/mqtt@5.10.1?bundle', 'https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.esm.js'];
+const BROKERS = ['wss://broker.hivemq.com:8884/mqtt', 'wss://broker.emqx.io:8084/mqtt'];
 const meId = (() => { try { let v = localStorage.getItem('dhc_id'); if (!v) { v = Math.random().toString(36).slice(2, 10); localStorage.setItem('dhc_id', v); } return v; } catch (e) { return Math.random().toString(36).slice(2, 10); } })();
 const DHC = {
-  peer: null, conn: null, room: '', me: { id: meId, name: '', marble: '' }, players: [], marbles: [], taken: {}, joined: false, retry: 0,
-  send(msg) { msg = { ...msg, from: this.me.id, room: this.room, t: Date.now() }; if (this.conn && this.conn.open) this.conn.send(msg); },
+  client: null, room: '', me: { id: meId, name: '', marble: '' }, players: [], marbles: [], taken: {}, joined: false, lastHb: 0, broker: 0,
+  send(msg) { msg = { ...msg, from: this.me.id, room: this.room, t: Date.now() }; if (this.client?.connected) this.client.publish(TOPIC + this.room + '/up', JSON.stringify(msg)); },
   async connect() {
-    setStatus(false); toast('connecting…');
-    if (!this.peer) { let Peer; for (const u of PEER_URLS) { try { const m = await import(u); Peer = m.Peer || m.default; break; } catch (e) {} } if (!Peer) { toast('no internet?'); return; }
-      this.peer = new Peer(); await new Promise((ok, bad) => { this.peer.on('open', ok); this.peer.on('error', bad); }).catch((e) => { toast('matchmaker down'); this.peer = null; }); if (!this.peer) return;
-      this.peer.on('error', (e) => { if (e.type === 'peer-unavailable') { toast('no room ' + this.room); setStatus(false); } }); }
-    const c = this.peer.connect(ID_PREFIX + this.room, { reliable: true }); this.conn = c;
-    c.on('open', () => { this.retry = 0; setStatus(true); $('roomTag').lastChild.textContent = this.room; this.send({ type: 'join', name: this.me.name }); });
-    c.on('data', (m) => this.onMessage(typeof m === 'string' ? JSON.parse(m) : m));
-    c.on('close', () => { setStatus(false); if (this.joined && this.retry++ < 20) setTimeout(() => this.connect(), 1500); });
+    status('wait', 'Connecting…');
+    let mqtt; for (const u of MQTT_URLS) { try { const m = await import(u); mqtt = m.default?.connect ? m.default : m.connect ? m : m.default; break; } catch (e) {} }
+    if (!mqtt) { status('bad', 'No internet? Could not load the connector.'); return; }
+    if (this.client) { try { this.client.end(true); } catch (e) {} }
+    const url = BROKERS[this.broker % BROKERS.length];
+    const c = mqtt.connect(url, { clientId: 'dhc_' + this.me.id + '_' + Math.random().toString(36).slice(2, 6), clean: true, reconnectPeriod: 2000, connectTimeout: 7000, keepalive: 20 });
+    this.client = c; this.joined = false; this.lastHb = 0;
+    const tryNext = setTimeout(() => { if (!c.connected) { this.broker++; this.connect(); } }, 8000);
+    c.on('connect', () => { clearTimeout(tryNext); c.subscribe([TOPIC + this.room + '/all', TOPIC + this.room + '/down/' + this.me.id]); status('wait', 'Looking for the TV with code ' + this.room + '…'); this.send({ type: 'join', name: this.me.name }); });
+    c.on('message', (t, buf) => { try { this.onMessage(JSON.parse(buf.toString())); } catch (e) {} });
+    c.on('offline', () => status('bad', 'Connection lost, reconnecting…'));
+    c.on('reconnect', () => status('wait', 'Reconnecting…'));
   },
   onMessage(msg) {
-    if (msg.type === 'welcome') { this.joined = true; this.me.marble = msg.marble; $('meName').textContent = msg.name; $('meName').style.color = msg.color; showMine(); if (msg.phase === 'race') go('race'); else if (!document.querySelector('#s-ready.on,#s-race.on,#s-win.on,#s-lose.on')) go('pick'); try { localStorage.setItem('dhc_room', this.room); localStorage.setItem('dhc_name', this.me.name); } catch (e) {} }
+    if (msg.type === 'hb') { this.lastHb = Date.now(); if (!this.joined) this.send({ type: 'join', name: this.me.name }); return; }
+    if (msg.type === 'rejoin') { this.send({ type: 'join', name: this.me.name }); return; }
+    if (msg.type === 'welcome') { this.lastHb = Date.now(); status('ok', 'Paired with the TV'); toast('✅ paired with the TV'); navigator.vibrate?.(40); this.joined = true; this.me.marble = msg.marble; $('meName').textContent = msg.name; $('meName').style.color = msg.color; showMine(); if (msg.phase === 'race') go('race'); else if (!document.querySelector('#s-ready.on,#s-race.on,#s-win.on,#s-lose.on')) go('pick'); try { localStorage.setItem('dhc_room', this.room); localStorage.setItem('dhc_name', this.me.name); } catch (e) {} }
     if (msg.type === 'full') toast('room is full');
     if (msg.type === 'roster') { this.marbles = msg.marbles; this.taken = msg.taken || {}; renderGrid(); }
     if (msg.type === 'lobby') { this.players = msg.players; const mine = msg.players.find((p) => p.id === this.me.id); if (mine) { this.me.marble = mine.marble; ready = mine.ready; paintReady(); showMine(); } renderPlayers(); }
@@ -132,6 +140,13 @@ const DHC = {
 };
 window.DHC = DHC;
 function setStatus(ok) { document.querySelector('#roomTag .dot')?.classList.toggle('warn', !ok); }
+function status(kind, text) { // header pill + a line under the Join button, so you always know if you're paired
+  const tag = $('roomTag'); tag.dataset.st = kind; tag.lastChild.textContent = DHC.room ? (kind === 'ok' ? DHC.room + ' ✓' : DHC.room) : '·····'; setStatus(kind === 'ok');
+  let el = $('pairStat'); if (!el) { el = document.createElement('p'); el.id = 'pairStat'; el.className = 'hint'; el.style.cssText = 'text-align:center;font-weight:700;margin:10px 0 0'; $('joinBtn').after(el); }
+  el.textContent = text; el.style.color = kind === 'ok' ? '#2bd46a' : kind === 'bad' ? '#ff5a5a' : '#ffb300';
+  for (const id of ['pairLobby']) { const x = $(id); if (x) { x.textContent = kind === 'ok' ? '● Paired with the TV' : '● ' + text; x.style.color = el.style.color; } }
+}
+setInterval(() => { if (DHC.joined && Date.now() - DHC.lastHb > 6500) { DHC.joined = false; status('bad', 'Lost the TV, trying again…'); DHC.send({ type: 'join', name: DHC.me.name }); } else if (DHC.joined) DHC.send({ type: 'ping' }); }, 2500);
 async function keepAwake() { try { DHC.wake = await navigator.wakeLock?.request('screen'); } catch (e) {} }
 function go(s) { document.querySelectorAll('section').forEach((x) => x.classList.toggle('on', x.id === 's-' + s)); }
 function toast(t) { const e = $('toast'); e.textContent = t; e.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(() => e.classList.remove('on'), 1400); }
