@@ -218,6 +218,9 @@ float wh(vec2 p){ return vn(p * 0.8 + vec2(uT * 0.11, uT * 0.05)) * 0.6 + vn(p *
     const l1 = dot(0xff3a5a), l2 = dot(0x4ff0ff); l1.scale.setScalar(0.8); l2.scale.setScalar(0.8); l1.position.set(0.4, -0.1, 0); l2.position.set(-0.4, -0.1, 0); g.add(l1, l2);
     scene.add(g); drones.push({ g, l1, l2, c: new THREE.Vector3(x, y, z), r, sp, ph: i * 2.1 });
   });
+  // AD TV r8 (11-18): a drone seen from below reads as a dark bar floating over the sea (race-r7 video 57.5 s). Drones only render
+  // when the lens is above them (blimp / high aerials, town below as the backdrop); from TV / chase / replay lenses they are hidden.
+  { const _cw = new THREE.Vector3(), prevSB = scene.onBeforeRender; scene.onBeforeRender = function (r, sc, cam, ...rest) { if (prevSB) prevSB.call(this, r, sc, cam, ...rest); if (cam) { cam.getWorldPosition(_cw); for (const d of drones) d.g.visible = _cw.y > d.g.position.y + 6; } }; }
   const bobs = fishers.map((f) => f.bob.p0);
   const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _p = new THREE.Vector3(), _s = new THREE.Vector3(1, 1, 1), _up = new THREE.Vector3(0, 1, 0);
   function swim(S, dt, t) {
