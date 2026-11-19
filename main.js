@@ -1033,7 +1033,8 @@ function buildReplay() {
   segs.push({ t0: tw - 4, t1: tw - 1.5, speed: 0.5, cam: 'chase', k: w.k, cap: 'SLOW-MO' });
   segs.push({ t0: tw - 1.5, t1: tw - 0.6, speed: 0.35, cam: 'gantry', k: w.k, cap: 'HEAD ON' });
   segs.push({ t0: tw - 0.6, t1: tw, speed: 0.15, cam: 'photo', k: w.k, cap: 'PHOTO FINISH', freeze: 2.2 });
-  segs.push({ t0: tw, t1: tw + 1.8, speed: 0.3, cam: 'orbit', k: w.k, cap: 'WINNER CAM' });
+  { let tw2 = tw; const fp = P[FIN], ft = P[(FIN + 1) % N].clone().sub(P[FIN]).normalize(); for (let t = tw; t < tw + 1.2; t += 0.02) { rec.apply(t); const d = marbles[w.k].mesh.position.clone().sub(fp); tw2 = t; if (d.dot(ft) > 3.5) break; } // Claude T-044: the Winner cam starts once the winner is clear of the finish gantry (from above, the beam hid it)
+    segs.push({ t0: tw2, t1: tw2 + 1.8, speed: 0.3, cam: 'orbit', k: w.k, cap: 'WINNER CAM' }); }
   return segs.filter((s) => s.t1 > s.t0);
 }
 function startReplay() {
@@ -1056,7 +1057,7 @@ function replayCamera(dt, now) {
   const sub = subject(s.k);
   let sh;
   if (s.cam === 'blimp') sh = shotBlimp(dt, now, s.k);
-  else if (s.cam === 'chase') sh = shotChase(s.k);
+  else if (s.cam === 'chase') { sh = shotChase(s.k); if (s.hxRide) sh.pos = sh.pos.clone().add(new THREE.Vector3(0, 2.5, 0)); } // Claude T-044 (part 2): the spiral ride sits higher, over the pin field
   else if (s.cam === 'tvreplay') sh = shotTV(dt, now, s.k);
   else if (s.cam === 'gantry') { const st = stations[stations.length - 1]; const look = sub.p.clone(); sh = { pos: st.pos, look, fov: THREE.MathUtils.clamp(500 / (st.pos.distanceTo(look) + 4), 12, 40), kPos: 99, kLook: 10 }; shotName = 'REPLAY · GANTRY'; setNear(Math.min(2.5, Math.max(0.2, st.pos.distanceTo(look) - 2))); }
   else if (s.cam === 'photo') { const fp = P[FIN].clone().add(new THREE.Vector3(0, 0.5, 0)); const f0 = THREE.MathUtils.radToDeg(2 * Math.atan(4.4 / finCam.d)); sh = { pos: finCam.pos, look: fp, fov: f0 * (1 - 0.25 * ((view.rt - s.t0) / (s.t1 - s.t0))), kPos: 99, kLook: 99, kFov: 3 }; shotName = 'REPLAY · PHOTO CAM'; setNear(Math.max(0.2, finCam.d - 4.2)); } // near-plane cut: flags/legs between lens and line vanish
@@ -1188,7 +1189,7 @@ function onWinner(m) {
   const p = session.byMarble(m.k); banner(`${m.name}${p ? ' · ' + p.name : ''} WINS!`, 2500);
   sfx.finish(); sfx.roar(0.22, 4); for (let i = 0; i < 4; i++) setTimeout(() => firework(gantryTop(i / 3).add(new THREE.Vector3(0, 3 + Math.random() * 4, 0))), i * 220);
   confetti(gantryTop(0.5), 300);
-  if (CFG.replay) setTimeout(() => { if (view.mode === 'live' && (race.phase === 'done' || race.phase === 'over')) startReplay(); }, 2300);
+  if (CFG.replay) setTimeout(() => { view.wantReplay = true; }, 2300); // Claude T-044: the replay starts inside a frame, before the cameras (a timer between frames switched modes after the live frame was drawn: an undeclared jump)
 }
 function endRace(silent) {
   race.phase = 'over';
@@ -1215,6 +1216,7 @@ let clankT = 0;
 var PF = { n: 0, steps: 0 }; let _pf = 0; const pfm = (k) => { const t = performance.now(); PF[k] = (PF[k] || 0) + t - _pf; _pf = t; }; // Claude T-042: per-section frame cost (window.__dh.perf())
 function frame(now) {
   _pf = performance.now(); PF.n++;
+  if (view.wantReplay) { view.wantReplay = false; if (view.mode === 'live' && (race.phase === 'done' || race.phase === 'over')) startReplay(); } // Claude T-044
   const dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); last = now; // Claude T-032c: never negative (a backwards jump parked the race clock at GO)
   acc += dt * PHYS.ts; let n = 0;
   if (view.mode !== 'live' && race.phase === 'over') acc = 0; // Claude T-042: replay / podium are recorded, the bodies can rest
@@ -1254,11 +1256,11 @@ function frame(now) {
     if (now - lastDrama > 250) { dramaTick(); renderBoard(); lastDrama = now; }
   }
   if (window.__free) { detachCam(); const f = window.__free; camera.position.set(...f.pos); camera.up.set(0, 1, 0); camera.lookAt(new THREE.Vector3(...f.look)); if (camera.fov !== f.fov) { camera.fov = f.fov; camera.updateProjectionMatrix(); } }
-  if (window.__camLog) { const w = camera.getWorldPosition(new THREE.Vector3()), d = camera.getWorldDirection(new THREE.Vector3()); window.__camLog.push([+(now / 1000).toFixed(3), w.x, w.y, w.z, d.x, d.y, d.z, camera.fov]); }
   pfm('hud'); adSumoTick(); // AD T-030b: mini rikishi stay upright
   sfx.update(dt, camera, marbles, view.mode); // AD T-027: roll loop, clicks, rail hits, fling whoosh, listener = camera
   adTown.setCamera(camera); adTown.update(dt, now / 1000); // AD critic pass 1
   pfm('town'); renderer.render(scene, camera); pfm('render');
+  if (window.__camLog) { const w = camera.getWorldPosition(new THREE.Vector3()), d = camera.getWorldDirection(new THREE.Vector3()); window.__camLog.push([+(now / 1000).toFixed(3), w.x, w.y, w.z, d.x, d.y, d.z, camera.fov]); } // Claude T-044: logged after the render, so it is the pose the player saw (the blimp aim is set just before the render)
   if (T41G && T41G.on) t41Restore(); // Claude T-041: hand the directors back their own camera
   frames++; fpsT += dt;
   if (fpsT > 1) {
@@ -1771,7 +1773,7 @@ function adGroup(k) { // lead group around the subject (unfinished marbles withi
   const g = marbles.filter((m) => m && !m.finished && m.mesh.position.distanceTo(sm.mesh.position) < 14 && Math.abs((m.prog || 0) - (sm.prog || 0)) < 16);
   return g.length ? g : [sm];
 }
-function adBlimpPlan(k, dur = 6.5) { if (camera.parent === gondolaMount && performance.now() - (AD4.planAt || -1e9) < 1200 && AD4.station) return; AD4.planAt = performance.now(); AD4.planN = (AD4.planN || 0) + 1; // Claude T-041: re-park at most every 2 s (0.1-0.5 s blimp shots were flash cuts); 1.2 s so a lost pack is found fast // Claude T-041: each re-park is a new blimp shot (a declared cut)
+function adBlimpPlan(k, dur = 6.5, needSee = false) { if (camera.parent === gondolaMount && performance.now() - (AD4.planAt || -1e9) < (needSee ? 1000 : 1200) && AD4.station) return; AD4.planAt = performance.now(); AD4.planN = (AD4.planN || 0) + 1; // Claude T-041: re-park at most every 2 s (0.1-0.5 s blimp shots were flash cuts); 1.2 s so a lost pack is found fast // Claude T-041: each re-park is a new blimp shot (a declared cut)
   const m = marbles[k], v = m.body.linvel(), sp = THREE.MathUtils.clamp(Math.hypot(v.x, v.y, v.z), 6, 30);
   const W = [1.6, 1.4, 1.2, 1, 0.7, 0.5], pts = [0, 0.12, 0.25, 0.4, 0.6, 0.8].map((f) => pointAtS(m.pr.s + sp * dur * 0.85 * f).p.add(new THREE.Vector3(0, 0.3, 0)));
   pts[0].copy(m.mesh.position).add(new THREE.Vector3(0, 0.3, 0));
@@ -1791,6 +1793,14 @@ function adBlimpPlan(k, dur = 6.5) { if (camera.parent === gondolaMount && perfo
   // sight lines are raycasts against the whole track (slow): test only the best-scored stations, 3 samples each, stop at the first clear one
   cands.sort((x, y) => y.sc - x.sc); best = cands[0].st;
   for (const c of cands.slice(0, 6)) if (visibleT(c.st, pts[0]) && visibleT(c.st, pts[2]) && visibleT(c.st, pts[4])) { best = c.st; break; }
+  if (needSee && T41G.sph) { // Claude T-044: re-parked because the marble was hidden: take a spot that sees it now and every 0.1 s for the next 1.4 s
+    // (inside the corkscrew / spirals a high spot sees it only between the turns, so lower and steeper spots are tried too); else the spot that sees it longest
+    const fut = [m.mesh.position.clone()]; for (let t = 0.1; t <= 1.41; t += 0.1) fut.push(pointAtS(m.pr.s + sp * t).p.add(new THREE.Vector3(0, 0.15, 0)));
+    const runOf = (st) => { let n = 0; for (const p of fut) { if (!t44Seen(st, p)) break; n++; } return n; };
+    const extra = []; for (let k = 0; k < 16; k++) { const a = k / 16 * Math.PI * 2, d = new THREE.Vector3(Math.cos(a), 0, Math.sin(a)); for (const [hz, el] of [[34, 0.42], [26, 0.62], [44, 0.33], [18, 1.05], [30, 0.85], [55, 0.5]]) { const st = C.clone().addScaledVector(d, hz); st.y = Math.max(C.y + hz * Math.tan(el), localTop(st) + 6); extra.push({ st, sc: -4 - Math.abs(el - 0.7) }); } }
+    const low = cands.slice(0, 12).map((c) => { const st = c.st.clone(); st.y = Math.max(C.y + Math.hypot(st.x - C.x, st.z - C.z) * Math.tan(0.42), localTop(st) + 8); return { st, sc: c.sc - 3 }; });
+    let bn = -1, bst = null; for (const c of cands.concat(low, extra)) { const n = runOf(c.st); if (n > bn) { bn = n; bst = c.st; } if (n === fut.length) break; }
+    if (bst && bn > 0) best = bst; AD4.holdUntil = performance.now() + 1600; if (bn < fut.length) T41G.n.blindPark = (T41G.n.blindPark || 0) + 1; }
   AD4.station = best; AD4.stT = performance.now();
   const ch = pts[pts.length - 1].clone().sub(pts[0]).setY(0); AD4.drift.copy(ch.lengthSq() > 1 ? ch.normalize().multiplyScalar(2.5) : ch.set(0, 0, 0));
   BL.pos.copy(best); BL.vel.set(0, 0, 0); if (blimp) { blimp.position.copy(best); blimp.updateMatrixWorld(true); }
@@ -1809,7 +1819,7 @@ function adBlimpGroup(k) {
 }
 function adBlimpShot(dt, now, fk = -1, age = null) { AD4.age = age; AD4.ageAt = now; // AD TV r5: TV shot age, for the late drift cut
   const st0 = standings(), lead = st0.find((m) => !m.finished) || st0[0];
-  const fresh = camera.parent !== gondolaMount || now - AD4.lastShotAt > 1500; // 1.5 s: slow phones (4-10 fps) must not re-open the shot every frame
+  const fresh = camera.parent !== gondolaMount || now - AD4.lastShotAt > 1500 || (view.mode === 'replay' && AD4.repSi !== view.si); if (view.mode === 'replay') AD4.repSi = view.si; else AD4.repSi = -1; // Claude T-044 (part 2): a replay blimp angle starts on its own marble (it kept the live shot's marble and the lens could not zoom) // 1.5 s: slow phones (4-10 fps) must not re-open the shot every frame
   if (fresh) { AD4.blimpT0 = now; AD4.badT = 0; AD4.lostT = 0; AD4.subK = fk >= 0 && marbles[fk] ? fk : lead.k; AD4.subLast = null; AD4.aimInit = true; if (view.mode === 'live') { adBlimpPlan(AD4.subK); camSnap = true; } }
   if (!marbles[AD4.subK]) AD4.subK = lead.k;
   AD4.lastShotAt = now; if (age == null) age = (now - AD4.blimpT0) / 1000;
@@ -1822,7 +1832,8 @@ function adBlimpShot(dt, now, fk = -1, age = null) { AD4.age = age; AD4.ageAt = 
   let ext = 0; for (const a of grp) for (const b of grp) ext = Math.max(ext, a.mesh.position.distanceTo(b.mesh.position));
   ext = Math.max(4, Math.min(14, ext + 1)); // group extent incl. one marble diameter; 3.5 u floor so a lone marble + its tag still reads
   const dist = Math.max(1, wp.distanceTo(AD4.tgt));
-  if (AD4.station && view.mode === 'live') { // pilot holds ~45 deg down (<= 14 u/s)
+  if (AD4.holdUntil > now) AD4.drift.set(0, 0, 0); // Claude T-044: a spot picked to see the marble (corkscrew) holds still for 1.6 s
+  else if (AD4.station && view.mode === 'live') { // pilot holds ~45 deg down (<= 14 u/s)
     const away = new THREE.Vector3(wp.x - AD4.tgt.x, 0, wp.z - AD4.tgt.z), hz = away.length(); if (hz > 0.1) away.divideScalar(hz); else away.set(1, 0, 0);
     const want = (wp.y - AD4.tgt.y) / Math.tan(0.785), sp = THREE.MathUtils.clamp((want - hz) * 0.9, -14, 14);
     AD4.drift.lerp(away.multiplyScalar(sp), Math.min(1, dt * 2));
@@ -2388,16 +2399,21 @@ if (TV7.on) {
   // ---- (3) replays ----
   const _replayCam = replayCamera; replayCamera = function (dt, now) {
     const s = view.segs[view.si];
-    if (s && s.cam === 'orbit') { const m = marbles[s.k], c = m.mesh.position.clone(), u = THREE.MathUtils.clamp((view.rt - s.t0) / (s.t1 - s.t0), 0, 1), a = u * 1.6 + 0.5; let p = null; // WINNER CAM: above the rails, not at deck level
+    if (s && s.cam === 'orbit' && s.t44a == null) { t44Prep(); const m = marbles[s.k]; let bA = 0, bN = -1; // Claude T-044: scan the shot ahead (the recording) for a clear side
+      for (const da of [0, 0.7, -0.7, 1.4, -1.4, 2.2, -2.2, Math.PI]) { let n = 0; for (let j = 0; j <= 8; j++) { const uu = j / 8; rec.apply(s.t0 + (s.t1 - s.t0) * uu); const cc = m.mesh.position.clone(), aa = uu * 1.6 + 0.5 + da;
+          for (const up of [0, 1.5, 3]) { const q = cc.clone().add(new THREE.Vector3(Math.cos(aa) * (6 - uu * 1.2), 5.4 - uu * 0.6 + up, Math.sin(aa) * (6 - uu * 1.2))); if (t44Seen(q, cc) && t44Seen(q, cc.clone().add(new THREE.Vector3(0, 0.2, 0))) && !t42NearGantry(q, 4) && tv7DeckDist(q) >= 1.6) { n++; break; } } }
+        if (n > bN) { bN = n; bA = da; } if (n === 9) break; }
+      rec.apply(view.rt); s.t44a = bA; }
+    if (s && s.cam === 'orbit') { const m = marbles[s.k], c = m.mesh.position.clone(), u = THREE.MathUtils.clamp((view.rt - s.t0) / (s.t1 - s.t0), 0, 1), a = u * 1.6 + 0.5 + (s.t44a || 0); let p = null; // WINNER CAM: above the rails, not at deck level
       if (TV8.on) { const mk = (up) => c.clone().add(new THREE.Vector3(Math.cos(a) * (6 - u * 1.2), 5.4 - u * 0.6 + up, Math.sin(a) * (6 - u * 1.2))); // AD TV r8: steeper, rise until the rail is <= ~22 % of the frame
-        if (s.tv8t == null || Math.abs(view.rt - s.tv8t) > 0.2) { s.tv8t = view.rt; let pk = null; for (const up of [0, 1.5, 3, 4.5, 6, 8, 10, 12]) { const q = mk(up); if (tv7DeckDist(q) < 1.6 || tv6Under(q) || tv6Inside(q) || t42NearGantry(q, 4)) continue; if (pk == null) pk = up; const fl = tv8Fill(q, tv7Up(c, 0.2), 38); if (fl.rail <= 0.22) { pk = up; break; } } if (pk != null) s.tv8upT = pk; }
-        if (s.tv8upT != null) { s.tv8up = s.tv8up == null ? s.tv8upT : s.tv8up + (s.tv8upT - s.tv8up) * Math.min(1, dt * 3); p = mk(s.tv8up); } }
+        t44Prep(); const blk = (q) => !t44Seen(q, c); /* Claude T-044: the Winner cam never parks behind the gantry or a pole */ if (s.tv8t == null || Math.abs(view.rt - s.tv8t) > 0.2 || (s.tv8up != null && blk(mk(s.tv8up)))) { s.tv8t = view.rt; let pk = null; for (const up of [0, -1, 1.5, -2, 3, 4.5, 6, 8, 10, 12]) { const q = mk(up); if (tv7DeckDist(q) < 1.6 || tv6Under(q) || tv6Inside(q) || t42NearGantry(q, 4) || blk(q)) continue; if (pk == null) pk = up; const fl = tv8Fill(q, tv7Up(c, 0.2), 38); if (fl.rail <= 0.22) { pk = up; break; } } if (pk != null) s.tv8upT = pk; }
+        if (s.tv8upT != null) { s.tv8up = s.tv8up == null ? s.tv8upT : s.tv8up + (s.tv8upT - s.tv8up) * Math.min(1, dt * (blk(mk(s.tv8up)) ? 10 : 3)); p = mk(s.tv8up); } }
       else for (const up of [0, 1.5, 3, 5]) { const q = c.clone().add(new THREE.Vector3(Math.cos(a) * (6.5 - u * 1.5), 4.2 - u * 0.8 + up, Math.sin(a) * (6.5 - u * 1.5))); if (tv7DeckDist(q) >= 1.6 && !tv6Under(q) && !tv6Inside(q) && !t42NearGantry(q, 4)) { p = q; break; } }
       if (p) { setNear(0.2); shotName = 'REPLAY · WINNER CAM'; applyShot({ pos: p, look: tv7Up(c, 0.2), fov: 38, kPos: 99, kLook: 99, kFov: 3 }, dt); return; } }
     if (!s || s.cam !== 'tvreplay' || !s.tv7) return _replayCam(dt, now);
     const m = marbles[s.k]; let q;
     if (s.tv7.mode === 'helix') { q = tv7HelixPose({ hx: s.tv7.hx, R: s.tv7.R, h: s.tv7.h, phi: s.tv7.phi, k: s.k }, m, dt, s.tv7.st || (s.tv7.st = {})); shotName = 'REPLAY · ' + s.tv7.hx.name + ' ORBIT';
-      { const hc = t41HelixCentre(s.tv7.hx.name); if (hc) { const p = m.mesh.position, r = p.clone().sub(hc).setY(0).normalize(); q = { pos: hc.clone().addScaledVector(r, 2.6).setY(p.y + 1.1), look: tv7Up(p, 0.25), fov: 46 }; shotName = 'REPLAY · INSIDE THE ' + s.tv7.hx.name; } } } // Claude T-041: the orbit pressed the lens against the deck (white frames); from the mast the marble is always in clear view
+      { const hc = t41HelixCentre(s.tv7.hx.name); if (hc) { const p = m.mesh.position, r = p.clone().sub(hc).setY(0).normalize(); /* Claude T-044 (part 2): the lens picks the radius / height that sees the marble now and 0.25 s on (a pin hid it); eased */ t44Prep(); const fut = [0.08, 0.16, 0.25].map((t) => { rec.apply(Math.min(s.t1, view.rt + t * (s.speed || 1))); return m.mesh.position.clone(); }); rec.apply(view.rt); const st44 = s.t44hx || (s.t44hx = { r: 2.6, y: 1.1 }); const pose = (rr, yy) => hc.clone().addScaledVector(r, rr).setY(p.y + yy); let want = null; for (const [rr, yy] of [[st44.r, st44.y], [2.6, 1.1], [2.6, 1.8], [3.3, 1.1], [1.9, 1.1], [3.3, 1.8], [1.9, 1.8], [2.6, 0.6], [3.8, 1.5], [2.6, 2.5]]) { const ps = pose(rr, yy); if (t44Seen(ps, p) && fut.every((f) => t44Seen(ps, f))) { want = [rr, yy]; break; } } if (want) { const k = 1 - Math.exp(-dt * 8); st44.r += (want[0] - st44.r) * k; st44.y += (want[1] - st44.y) * k; } q = { pos: pose(st44.r, st44.y), look: tv7Up(p, 0.25), fov: 46 }; shotName = 'REPLAY · INSIDE THE ' + s.tv7.hx.name; } } } // Claude T-041: the orbit pressed the lens against the deck (white frames); from the mast the marble is always in clear view
     else if (s.tv7.mode === 'crane') { q = tv7CranePose(s, m, dt); shotName = 'REPLAY · CRANE'; }
     else if (s.tv7.mode === 'hxwide' || s.tv7.mode === 'wide') { const look = lookTarget(s.k, -1), cl = s.tv7.cen ? look.clone().lerp(s.tv7.cen, 0.35) : look; q = { pos: s.tv7.pos.clone(), look: cl, fov: THREE.MathUtils.clamp(THREE.MathUtils.radToDeg(2 * Math.atan(s.tv7.half / s.tv7.pos.distanceTo(cl))), 26, 56) }; shotName = 'REPLAY · WIDE'; } // AD TV r8: third decisive angle
     else { const look = lookTarget(s.k, -1); q = { pos: s.tv7.pos.clone(), look, fov: THREE.MathUtils.clamp(THREE.MathUtils.radToDeg(2 * Math.atan(5 / s.tv7.pos.distanceTo(look))), 16, 46) }; shotName = 'REPLAY · TRACKSIDE'; }
@@ -2411,34 +2427,41 @@ if (TV7.on) {
     const hx = tv7Hx.find((h) => sm.filter((q) => tv7InHx(q.s, 1) === h).length >= 3);
     if (alt) return tv8PlanAlt(s, sm, hx, alt); // AD TV r8: decisive angle 3 = a different lens type
     if (hx) { let bh = null; for (const [dR, hh, phi] of (TV8.on ? TV7_HXC.filter((c) => c[1] >= 8.5) : TV7_HXC)) { const sh = { R: hx.r + hx.hw + dR, h: hh, phi }, ins = sm.filter((q) => tv7InHx(q.s, 1.5) === hx), ok = ins.filter((q) => tv7Clean(tv7HelixLens(hx, tv7Up(q.p, 0), sh), tv7Up(q.p, 0.3), 1.6)).length / Math.max(1, ins.length); if (!bh || ok > bh.ok) bh = { ok, sh }; }
+      { const hc = t41HelixCentre(hx.name); if (hc) { t44Prep(); let bad = 0; for (let k = 0; k <= 40 && !bad; k++) { rec.apply(s.t0 + (s.t1 - s.t0) * k / 40); const p = marbles[s.k].mesh.position.clone(), r = p.clone().sub(hc).setY(0).normalize(); if (![[2.6, 1.1], [2.6, 1.8], [3.3, 1.1], [1.9, 1.1], [3.3, 1.8], [1.9, 1.8], [2.6, 0.6], [3.8, 1.5], [2.6, 2.5]].some(([rr, yy]) => t44Seen(hc.clone().addScaledVector(r, rr).setY(p.y + yy), p))) bad = 1; } if (view.mode === 'replay') rec.apply(view.rt);
+        if (bad) { s.cam = 'chase'; s.hxRide = true; if (s.banner) s.banner = [s.banner[0], String(s.banner[1]).replace(/TRACKSIDE|LONG LENS|BLIMP( CAM)?|ON BOARD|CRANE/, 'CHASE CAM')]; T41G.n.hxChase = (T41G.n.hxChase || 0) + 1; return null; } } } // Claude T-044 (part 2): the lens inside the spiral cannot see past the pin field here: this shot rides with the marble instead
       return { mode: 'helix', hx, ...bh.sh, st: { noLow: TV8.on } }; } // per-frame lens search handles the dirty spots
     let best = null;
     for (const da of [0, 6, -6, 12, -12, 18]) for (const side of [1, -1]) for (const [D, H] of [[6, 6], [9, 8], [12, 10], [16, 12], [20, 14], [5, 4.5]]) {
       const f = tv5Frame(mid.s + da), a = f.p.clone().addScaledVector(f.n, side * (f.hw + D)).addScaledVector(tv5Y, H); if (!tv7Clean(a, null, 2.2)) continue; let ok = true, elev = 0, rate = 0, prev = null;
       for (const q of sm) { const tg = tv7Up(q.p, 0.3), d = tg.clone().sub(a), hz = Math.hypot(d.x, d.z), e = Math.atan2(-d.y, hz); if (d.length() > 42 || e < THREE.MathUtils.degToRad(12) || !tv6Sight(a, tg) || tv7HxSeg(a, tg)) { ok = false; break; } elev += e; const dn = d.normalize(); if (prev) rate = Math.max(rate, prev.angleTo(dn) * 57.3 / ((s.t1 - s.t0) / 6)); prev = dn; }
-      if (!ok || rate * sp > 34) continue; const sc = Math.abs(elev / sm.length - THREE.MathUtils.degToRad(24)) * 57.3 + rate * sp * 0.6; if (!best || sc < best.sc) best = { sc, pos: a, side };
+      if (!ok || rate * sp > 34) continue; const sc = Math.abs(elev / sm.length - THREE.MathUtils.degToRad(24)) * 57.3 + rate * sp * 0.6; if (!best || sc < best.sc) best = { sc, pos: a, side }; (s.t44c || (s.t44c = [])).push({ sc, pos: a, side });
     }
+    if (best && s.t44c) { t44Prep(); const dense = []; for (let k = 0; k <= 80; k++) { rec.apply(s.t0 + (s.t1 - s.t0) * k / 80); dense.push(marbles[s.k].mesh.position.clone()); } if (view.mode === 'replay') rec.apply(view.rt); // Claude T-044: the station must see the marble the whole shot (every 1/40), pins and posts included
+      const pick = s.t44c.sort((x, y) => x.sc - y.sc).find((c) => dense.every((p) => t44Seen(c.pos, p))); s.t44c = null; if (pick) best = pick; else T41G.n.planDirty = (T41G.n.planDirty || 0) + 1; }
     if (best) return { mode: 'fixed', pos: best.pos, side: best.side };
     if (view.segs.indexOf(s) > view.si && view.segs.some((x) => x !== s && x.tv7 && x.tv7.mode === 'crane')) { s.cam = 'chase'; if (s.banner) s.banner = [s.banner[0], String(s.banner[1]).replace(/TRACKSIDE|LONG LENS|BLIMP( CAM)?|ON BOARD|CRANE/, 'CHASE CAM')]; return null; } // Claude T-041 (AD): one Crane per replay, the rest ride with the marble
     return { mode: 'crane' }; // elevated 3/4-rear follow, cleaned per frame
   }
   function tv7CranePose(s, m, dt) { const st = s.tv7, sp = project(m.mesh.position, m.vhint ?? 0, true).s, tg = tv7Up(m.mesh.position, 0.3); let want = null;
     const hin = tv7InHx(sp, 0.5); if (hin) { const [dR, hh, phi] = TV7_HXC[0]; if (!st.hs || st.hs.hx !== hin) { st.hs = { hx: hin, R: hin.r + hin.hw + dR, h: hh, phi, k: s.k }; st.hst = { noLow: TV8.on }; camSnap = true; T42.rc = (T42.rc || 0) + 1; } /* Claude T-042: a declared cut (into the spiral) */ const q = tv7HelixPose(st.hs, m, dt, st.hst); st.pos = q.pos.clone(); return q; }
-    for (const [bk, D, H] of [[8, 5, 9], [10, 7, 11], [7, 3, 10], [12, 9, 13], [5, 2, 12]]) { for (const side of st.side ? [st.side, -st.side] : [1, -1]) { const f = tv5Frame(sp - bk), l = f.p.clone().addScaledVector(f.n, side * (f.hw + D)).addScaledVector(tv5Y, H); l.y = Math.max(l.y, m.mesh.position.y + H * 0.85) + (st.tv8lift || 0); if (tv7Clean(l, tg, 3.5)) { want = l; st.side = side; break; } } if (want) break; }
-    if (!st.pos || camSnap) st.pos = (want || tv7Up(m.mesh.position, 12)).clone(); else if (want) st.pos.lerp(want, 1 - Math.exp(-dt * 2.5));
+    t44Prep(); const fut44 = view.mode === 'replay' ? [0.15, 0.3].map((t) => { rec.apply(Math.min(s.t1, view.rt + t * (s.speed || 1))); return m.mesh.position.clone(); }) : []; if (fut44.length) rec.apply(view.rt); const sees44 = (l) => t44Seen(l, m.mesh.position) && fut44.every((f) => t44Seen(l, f)); // Claude T-044 (part 2): the crane only takes a spot that sees the marble now and 0.3 s on (the finish gantry hid it from above)
+    for (const [bk, D, H] of [[8, 5, 9], [10, 7, 11], [7, 3, 10], [12, 9, 13], [5, 2, 12], [0, 8, 6], [3, 6, 5], [-4, 8, 6], [14, 4, 7]]) { for (const side of st.side ? [st.side, -st.side] : [1, -1]) { const f = tv5Frame(sp - bk), l = f.p.clone().addScaledVector(f.n, side * (f.hw + D)).addScaledVector(tv5Y, H); l.y = Math.max(l.y, m.mesh.position.y + H * 0.85) + (st.tv8lift || 0); if (tv7Clean(l, tg, 3.5) && sees44(l)) { want = l; st.side = side; break; } } if (want) break; }
+    if (!st.pos || camSnap) st.pos = (want || tv7Up(m.mesh.position, 12)).clone(); else if (want) st.pos.lerp(want, 1 - Math.exp(-dt * (sees44(st.pos) ? 2.5 : 6))); /* Claude T-044 (part 2): a crane that has lost its marble moves to the clear spot faster */
     const look = lookTarget(s.k, -1); return { pos: st.pos.clone(), look, fov: THREE.MathUtils.clamp(THREE.MathUtils.radToDeg(2 * Math.atan(4.5 / st.pos.distanceTo(look))), 24, 50) }; }
   function tv8PlanAlt(s, sm, hx, alt) { // a lens type different from angle 1: static WIDE (helix or high-wide) or the reverse trackside
+    t44Prep(); const dense = []; for (let k = 0; k <= 40; k++) { rec.apply(s.t0 + (s.t1 - s.t0) * k / 40); dense.push(marbles[s.k].mesh.position.clone()); } if (view.mode === 'replay') rec.apply(view.rt);
+    const allSeen = (a) => dense.every((p) => t44Seen(a, p)); // Claude T-044: a static wide lens must see the marble the whole shot (the corkscrew edge hid it)
     const ok = (a) => sm.filter((q) => { const tg = tv7Up(q.p, 0.3); return tv8Sees(a, tg) && a.distanceTo(tg) < 75; }).length >= 5;
     const fr = (a, half) => sm.filter((q) => { const tg = tv7Up(q.p, 0.3), fl = tv8Fill(a, tg, THREE.MathUtils.radToDeg(2 * Math.atan(half / Math.max(1, a.distanceTo(tg))))); return fl.rail <= 0.25 && fl.deck <= 0.7; }).length >= 5;
     if (hx) { const cen = new THREE.Vector3(hx.c.x, (sm[0].p.y + sm[6].p.y) / 2, hx.c.z), a0 = Math.atan2(sm[3].p.z - hx.c.z, sm[3].p.x - hx.c.x); let best = null;
       for (let k = 0; k < 12; k++) for (const [D, H] of [[24, 13], [30, 16], [20, 11], [36, 19]]) { const a = a0 + (k - 6) * Math.PI / 6 * 0.5, p = new THREE.Vector3(hx.c.x + Math.cos(a) * D, hx.yt + H, hx.c.z + Math.sin(a) * D); if (!tv7Clean(p, null, 2.5)) continue;
-        const vis = sm.filter((q) => tv8Sees(p, tv7Up(q.p, 0.3))).length; const sc = vis * 10 - Math.abs(Math.atan2(Math.sin(a - a0), Math.cos(a - a0))) * 3; if (vis >= 5 && (!best || sc > best.sc)) best = { sc, p }; }
+        const vis = sm.filter((q) => tv8Sees(p, tv7Up(q.p, 0.3))).length; const sc = vis * 10 - Math.abs(Math.atan2(Math.sin(a - a0), Math.cos(a - a0))) * 3; if (vis >= 5 && (!best || sc > best.sc) && allSeen(p)) best = { sc, p }; }
       return best ? { mode: 'hxwide', pos: best.p, cen, half: hx.r + hx.hw + 2 } : null; }
     let best = null; const mid = sm[3];
     for (const da of [0, 8, -8, 16, -16, 24, -24]) for (const side of [1, -1]) for (const [D, H] of [[14, 16], [18, 20], [11, 13], [24, 24], [9, 10], [30, 26], [7, 14]]) {
       if (alt.mode === 'fixed' && side === alt.side && Math.abs(da) < 12) continue; const f = tv5Frame(mid.s + da), a = f.p.clone().addScaledVector(f.n, side * (f.hw + D)).addScaledVector(tv5Y, H);
       if (!tv7Clean(a, null, 2.5) || !ok(a)) continue; if (alt.pos) { const d1 = tv7Up(mid.p, 0.3).sub(alt.pos).normalize(), d2 = tv7Up(mid.p, 0.3).sub(a).normalize(); if (d1.angleTo(d2) < 0.6) continue; }
-      if (!fr(a, 7)) continue; const e = Math.atan2(a.y - mid.p.y, Math.hypot(a.x - mid.p.x, a.z - mid.p.z)); const sc = Math.abs(e - 0.6) * 10 + Math.abs(da) * 0.1; if (!best || sc < best.sc) best = { sc, a }; }
+      if (!fr(a, 7) || !allSeen(a)) continue; const e = Math.atan2(a.y - mid.p.y, Math.hypot(a.x - mid.p.x, a.z - mid.p.z)); const sc = Math.abs(e - 0.6) * 10 + Math.abs(da) * 0.1; if (!best || sc < best.sc) best = { sc, a }; }
     return best ? { mode: 'wide', pos: best.a, cen: null, half: 7 } : null;
   }
   const tv8OnLift = (s) => { const sm = tv7Samples(s); return sm.filter((q) => /CHAIN LIFT/.test(pieceAt(q.s))).length >= 4; };
@@ -2635,7 +2658,7 @@ window.__pt = {
   blimp: () => blimp, gondola: () => gondolaMount,
   track: () => ({ P: P.map((p) => [p.x, p.y, p.z]), HW: HW.slice(), L }),
   state: () => ({ mode: view.mode, phase: race.phase, cam: CAMS[camMode], shot: typeof shotName === 'string' ? shotName : '', t: +race.t.toFixed(3), rt: +(view.rt || 0).toFixed(3), seg: view.si, segCam: view.mode === 'replay' ? (view.segs?.[view.si]?.cam || '') : '', onBlimp: camera.parent === gondolaMount, photo: document.body.classList.contains('photoMode'),
-    shotId: (t41CloseCam() ? 'h' + (TV6.cutN || 0) + ':' : '') + (camera.parent === gondolaMount ? 'b' + (AD4.planN || 0) + ':' : '') + (view.mode === 'live' && camMode === 0 ? (TV5.shot?.t0 ?? 0) : '') + (view.mode === 'replay' && T42.rc ? 'r' + T42.rc : ''),
+    shotId: (t41CloseCam() ? 'h' + (TV6.cutN || 0) + ':' : '') + (camera.parent === gondolaMount ? 'b' + (AD4.planN || 0) + ':' : '') + (view.mode === 'live' && camMode === 0 ? (TV5.shot?.t0 ?? 0) : '') + (T42.rc ? 'r' + T42.rc : '') /* Claude T-044 (part 2): live TV spiral cuts are declared too */,
     subj: view.mode === 'replay' ? (view.segs?.[view.si]?.k ?? -1) : view.mode !== 'live' || race.phase === 'idle' ? -1 : camMode === 0 ? (TV5.shot?.k ?? dir.shot?.k ?? -1) : (follow >= 0 ? follow : standings()[0].k) }),
   setCam: (k) => setCam(k), setFollow: (k) => { follow = k; },
   isOccluder: (o) => !o.userData.ptRail && !o.userData.t41,
@@ -2648,17 +2671,56 @@ window.__pt = {
 var T41G = { on: Q.get('camguard') !== '0', R: null, V: new THREE.Vector3(), Vff: new THREE.Vector3(), Tp: null, Q: null, S: new THREE.Vector3(), corr: new THREE.Vector3(), dV: new THREE.Vector3(), dPrev: null, key: '', prev: null, prevV: new THREE.Vector3(), prevQ: new THREE.Quaternion(), off: new THREE.Vector3(), offT: new THREE.Vector3(), hid: 0, n: { deck: 0, clip: 0, crane: 0, smooth: 0 } };
 const t41Ray = new THREE.Raycaster(), t41Dirs = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]].map((a) => new THREE.Vector3(...a));
 let t41Solid = null;
+// Claude T-044: sight lines to the shot's marble. Solids get a world sphere once (pre-filter) and a BVH, so the camera can check
+// every frame and several lines at once. Same rule as tools/playtest-game.cjs: blocked = something solid between the near plane
+// and 0.55 u short of the marble.
+function t44Prep() {
+  if (!t41Solid) t41Solid = occluders.concat(trackOcc).filter((o) => !o.userData.ptMover);
+  if (T41G.sph) { const f = renderer.info.render.frame; if (T41G.sphF !== f) { T41G.sphF = f; for (const e of T41G.sph) if (e.dyn) e.c.copy(e.lc).applyMatrix4(e.o.matrixWorld); } return; }
+  // everything solid a player can see (same rule as the playtest tool): not the marbles, the camera rig, moving lift parts,
+  // the clear rails, glass or the sky; hidden baked originals stand in for their merged copies
+  const marb = new Set(); for (const m of marbles) m.mesh.traverse((o) => marb.add(o));
+  const shown = (o) => { for (let p = o; p; p = p.parent) if (!p.visible) return false; return true; };
+  const glass = (m) => { const mm = Array.isArray(m) ? m[0] : m; return !mm || (mm.transparent && mm.opacity < 0.6) || mm.visible === false; };
+  const list = []; scene.updateMatrixWorld(true);
+  scene.traverse((o) => {
+    if (!o.isMesh || marb.has(o) || o.userData.t41 || o.userData.ptRail || o === T41G.ring) return;
+    for (let p = o; p; p = p.parent) if (p === camera || p === gondolaMount || p.userData.ptCamRig || p.userData.ptMover) return;
+    if (!(shown(o) || o.userData.ptBaked) || glass(o.material)) return;
+    if (!(o.raycast === THREE.Mesh.prototype.raycast || o.raycast === acceleratedRaycast || o.isInstancedMesh)) return; // merged copies: their originals count
+    const g = o.geometry; if (!g || !g.attributes.position) return; if (!g.boundingSphere) g.computeBoundingSphere();
+    if (g.boundingSphere.radius * o.matrixWorld.getMaxScaleOnAxis() > 260) return; // sky dome / backdrop
+    list.push(o);
+  });
+  const seenG = new Set(); let dyn = 0;
+  T41G.sph = list.map((o) => { const g = o.geometry, sp = g.boundingSphere.clone().applyMatrix4(o.matrixWorld);
+    if (!o.isInstancedMesh) { if (!seenG.has(g)) { seenG.add(g); if (!g.boundsTree) try { g.boundsTree = new MeshBVH(g, { indirect: true }); } catch (e) { } } if (g.boundsTree) o.raycast = acceleratedRaycast; }
+    let d = false; for (let p = o; p; p = p.parent) if (p === blimp || /flag|pennant|banner/i.test(p.name || '')) d = true; if (d) dyn++; // things that move or sway: sphere follows them
+    return { o, c: sp.center, r: sp.radius * 1.05 + 0.05, lc: g.boundingSphere.center.clone(), dyn: d }; });
+  console.log('[T-044 sight lines]', T41G.sph.length, 'solids,', dyn, 'moving');
+}
+const _t44d = new THREE.Vector3(), _t44l = [];
+function t44Clear(from, to) {
+  const d = _t44d.copy(to).sub(from), L = d.length(); if (L < 1e-3) return true; d.divideScalar(L);
+  const far = Math.max(camera.near, L - 0.55); _t44l.length = 0;
+  for (const e of T41G.sph) { const ex = e.c.x - from.x, ey = e.c.y - from.y, ez = e.c.z - from.z, t = Math.max(0, Math.min(far, ex * d.x + ey * d.y + ez * d.z)), px = ex - d.x * t, py = ey - d.y * t, pz = ez - d.z * t; if (px * px + py * py + pz * pz <= e.r * e.r) _t44l.push(e.o); }
+  if (!_t44l.length) return true;
+  t41Ray.set(from, d); t41Ray.near = camera.near; t41Ray.far = far; t41Ray.firstHitOnly = true; const ok = t41Ray.intersectObjects(_t44l, false).length === 0; t41Ray.near = 0; return ok;
+}
+// seen = the marble itself (centre and top) is in clear view
+const _t44q = new THREE.Vector3(); function _t44v(m, x, y, z) { return _t44q.set(m.x + x, m.y + y, m.z + z); }
+function t44Seen(p, mp) { return t44Clear(p, mp) && t44Clear(p, _t44v(mp, 0, 0.3, 0)); }
 function t41CloseCam() { return camera.parent !== gondolaMount && (view.mode === 'replay' ? view.segs?.[view.si]?.cam === 'chase' : camMode >= 2 || TV5.shot?.tv10 === 'chase'); } // chase/front lenses (their spiral cut counts)
 function t41Key() { return [view.mode, race.phase === 'grid' ? 'grid' : '', t41CloseCam() ? TV6.cutN || 0 : '', camMode, view.mode === 'live' && camMode === 0 ? (TV5.shot?.t0 ?? 0) : '', view.si, view.mode === 'replay' ? view.segs?.[view.si]?.cam : '', camera.parent === gondolaMount].join('|'); }
 function t41Guard(dt) {
   { const onB = camera.parent === gondolaMount && view.mode !== 'podium', ld = standings()[0]; T41G.ring.visible = onB && !!ld; if (onB && ld) { const p = ld.mesh.position; const pr = ld.pr || project(p, 0, true); T41G.ring.position.set(p.x, pr.cy + 0.06, p.z); const s = 1 + 0.12 * Math.sin(performance.now() * 0.006); T41G.ring.scale.set(s, s, s); } } // AD 11-18: soft ring under the leader, blimp shots only
   if (view.mode === 'live' && camMode === 0 && TV5.shot && TV5.shot.type === 'blimp' && TV5.shot.k >= 0 && race.t > 3) { // a TV aerial whose marble is hidden under a deck for 0.5 s ends (the director cuts)
-    if (!t41Solid) t41Solid = occluders.concat(trackOcc).filter((o) => !o.userData.ptMover);
-    const cw = camera.getWorldPosition(new THREE.Vector3()), tp = marbles[TV5.shot.k].mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0)), d = tp.clone().sub(cw), L = d.length();
-    t41Ray.set(cw, d.divideScalar(L)); t41Ray.near = camera.near; t41Ray.far = L - 0.55; const hid = t41Ray.intersectObjects(t41Solid, false).length > 0; t41Ray.near = 0;
-    if (hid) { T41G.bhid = (T41G.bhid || 0) + dt; if (T41G.bhid > 0.5 && performance.now() / 1000 - TV5.shot.t0 > 1.6) { TV5.shot.dur = Math.min(TV5.shot.dur, performance.now() / 1000 - TV5.shot.t0); T41G.bhid = 0; T41G.n.recut = (T41G.n.recut || 0) + 1; } } else T41G.bhid = 0;
+    t44Prep(); const cw = camera.getWorldPosition(new THREE.Vector3()), hid = !t44Seen(cw, marbles[TV5.shot.k].mesh.position); // Claude T-044
+    if (hid) { T41G.bhid = (T41G.bhid || 0) + dt; if (T41G.bhid > 0.15 && performance.now() / 1000 - TV5.shot.t0 > 1.1) { TV5.shot.dur = Math.min(TV5.shot.dur, performance.now() / 1000 - TV5.shot.t0); T41G.bhid = 0; T41G.n.recut = (T41G.n.recut || 0) + 1; } } else T41G.bhid = 0;
   }
   if (camera.parent !== scene && camera.parent !== null) { T41G.R = null; T41G.key = ''; // blimp: the camera rides the gondola
+    if (view.mode === 'live' && race.phase === 'race' && marbles[AD4.subK]) { t44Prep(); const cw = camera.getWorldPosition(new THREE.Vector3()); // Claude T-044: a blimp that cannot see its marble re-parks
+      if (!t44Seen(cw, marbles[AD4.subK].mesh.position)) { T41G.phid = (T41G.phid || 0) + dt; if (T41G.phid > 0.05 && performance.now() - (AD4.planAt || -1e9) > 1020) /* Claude T-044 (part 2): sooner (a shot under 1 s is a flash cut) */ { T41G.phid = 0; adBlimpPlan(AD4.subK, 6.5, true); AD4.blimpT0 = performance.now(); AD4.badT = 0; AD4.aimInit = true; camSnap = true; T41G.n.repark = (T41G.n.repark || 0) + 1; } } else T41G.phid = 0; }
     const sg = view.mode === 'replay' ? view.segs?.[view.si] : null; // Claude T-042: replay blimp angles must show the leader too: zoom (and aim) the gondola lens
     if (sg && sg.cam === 'blimp' && marbles[sg.k]) { T41G.dirP = camera.position.clone(); T41G.dirQ = camera.quaternion.clone(); T41G.dirF = camera.fov; T41G.saved = true;
       const cw = camera.getWorldPosition(new THREE.Vector3()), tp = marbles[sg.k].mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0)), f0 = camera.fov, tgt = Math.max(8, Math.min(f0, THREE.MathUtils.radToDeg(2 * Math.atan(R / (cw.distanceTo(tp) * 0.08))))), bk = 'b' + view.si, h = Math.max(1 / 240, Math.min(0.1, dt));
@@ -2675,10 +2737,11 @@ function t41Guard(dt) {
     t41Ray.firstHitOnly = true; }
   const key = t41Key(), cut = key !== T41G.key || !T41G.R; T41G.key = key;
   const c = camera.position, h = Math.max(1 / 240, Math.min(0.1, dt));
-  if (cut) { T41G.off.set(0, 0, 0); T41G.offT.set(0, 0, 0); T41G.hid = 0; }
+  const dJump = !T41G.lastD || T41G.lastD.distanceTo(T41G.dirP) > 1.5; T41G.lastD = T41G.dirP.clone(); // Claude T-044: a key change where the director did not move (green light on Chase) keeps the crane, so the lens does not hop
+  if (cut && dJump) { T41G.off.set(0, 0, 0); T41G.offT.set(0, 0, 0); T41G.hid = 0; }
   // live TV: a shot that has lost its marble for 0.2 s ends (the director cuts)
   const seg = view.mode === 'replay' ? view.segs?.[view.si] : null;
-  const subK = seg ? seg.k : view.mode === 'live' && camMode === 0 && TV5.shot && TV5.shot.type !== 'finish' ? TV5.shot.k : -1;
+  const subK = seg ? seg.k : view.mode === 'live' && camMode === 0 && TV5.shot && TV5.shot.type !== 'finish' ? TV5.shot.k : view.mode === 'live' && camMode >= 2 ? (follow >= 0 ? follow : standings()[0].k) : -1; // Claude T-044: Chase / Front keep their marble in view too
   if (view.mode === 'live' && camMode === 0 && TV5.shot && subK >= 0 && marbles[subK]) {
     const sp = marbles[subK].mesh.position.clone().project(camera);
     const age = performance.now() / 1000 - TV5.shot.t0, finishCam = /finish/.test(TV5.shot.type || '');
@@ -2688,12 +2751,20 @@ function t41Guard(dt) {
   let aim = null;
   if (subK >= 0 && marbles[subK] && !(seg && seg.cam === 'photo')) {
     const tp = marbles[subK].mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0));
-    const seen = (p) => { const d = tp.clone().sub(p), L = d.length(); t41Ray.set(p, d.divideScalar(L)); t41Ray.near = camera.near; t41Ray.far = Math.max(camera.near, L - 0.55); const ok = t41Ray.intersectObjects(t41Solid, false).length === 0; t41Ray.near = 0; return ok; }; // the near plane hides what is closer (photo cam)
-    T41G.fc = (T41G.fc || 0) + 1; const chk = cut || T41G.hid > 0 || T41G.fc % 3 === 0; // visibility is checked 20 times a second (it is the costly ray)
-    if (chk && !seen(c.clone().add(T41G.off))) { T41G.hid += dt; if (T41G.hid > 0.03) { const toT = tp.clone().sub(c), side = new THREE.Vector3(-toT.z, 0, toT.x).normalize();
-      for (const o of [[0, 2, 0], [0, 4, 0], [0, 6, 0], 'L4', 'R4', [0, 9, 0], 'in40', 'in70', 'in85', 'L8', 'R8', [0, -2, 0]]) { const w = typeof o !== 'string' ? new THREE.Vector3(...o) : o[0] === 'i' ? toT.clone().multiplyScalar(+o.slice(2) / 100).add(new THREE.Vector3(0, o === 'in85' ? 0.6 : 1.5, 0)) : side.clone().multiplyScalar((o[0] === 'L' ? 1 : -1) * +o.slice(1)); if (seen(c.clone().add(w))) { T41G.offT.copy(w); break; } } } }
-    else if (chk) T41G.hid = 0;
-    T41G.off.lerp(T41G.offT, cut ? 1 : 1 - Math.exp(-dt * 14)); if (T41G.off.lengthSq() > 0.01) { c.add(T41G.off); aim = tp; T41G.n.crane++; }
+    t44Prep(); const mp = marbles[subK].mesh.position; // Claude T-044: every frame, and 0.3 s ahead: where the marble and the director's camera will be
+    const mv = T41G.mpPrev && T41G.mpK === subK && !cut ? mp.clone().sub(T41G.mpPrev).divideScalar(h) : new THREE.Vector3(), cv = T41G.dPrev2 && !cut ? c.clone().sub(T41G.dPrev2).divideScalar(h) : new THREE.Vector3();
+    T41G.mpPrev = mp.clone(); T41G.mpK = subK; T41G.dPrev2 = c.clone(); if (mv.length() > 150) mv.set(0, 0, 0); if (cv.length() > 150) cv.set(0, 0, 0); // a respawn or a teleport is not motion
+    const HZ = view.mode === 'replay' ? [0, 0.07, 0.14, 0.22, 0.3, 0.42, 0.55] : [0, 0.07, 0.14, 0.22, 0.3]; // Claude T-044 (part 2): replay looks further ahead (the recording is exact): a pin field or the finish gantry comes up faster than the crane can rise
+    const mAt = view.mode === 'replay' && seg ? HZ.map((t) => { rec.apply(Math.min(seg.t1, view.rt + t * (seg.speed || 1))); return marbles[subK].mesh.position.clone(); }) : null; if (mAt) rec.apply(view.rt); // replay: from the recording
+    const leadClear = (w, all) => { let n = 0, tot = 0, run = true; for (let i = 0; i < HZ.length; i++) { const t = HZ[i]; if (!t44Seen(c.clone().addScaledVector(cv, t).add(w), mAt ? mAt[i] : mp.clone().addScaledVector(mv, t))) { run = false; if (!all) break; } else { tot++; if (run) n++; } } return all ? n * 2 + tot : n; }; // Claude T-044 (part 2): all = score prefix and total, so when nothing stays clear the spot clear soonest after wins
+    if (leadClear(T41G.offT) < HZ.length) { T41G.hid += dt; const toT = tp.clone().sub(c), side = new THREE.Vector3(-toT.z, 0, toT.x).normalize(); let pick = null, best = -1;
+      const CAND = t41CloseCam() ? [[0, 0, 0], [0, 1, 0], 'L1', 'R1', [0, 2, 0], 'L2', 'R2', 'n35', 'n55', [0, 3, 0], 'L3', 'R3', 'n70', 'L4', 'R4', [0, 4.5, 0]] /* Claude T-044 (part 2): n = closer in behind the marble (a mast between the chase lens and the marble on a spiral) */ : [[0, 0, 0], [0, 1, 0], [0, 2, 0], 'L2', 'R2', [0, 3, 0], 'L3', 'R3', [0, 4.5, 0], 'in30', 'L5', 'R5', [0, 6, 0], [0, 8, 0], 'in50', [0, 10, 0], [0, -1.5, 0]];
+      for (const o of CAND) { const w = typeof o !== 'string' ? new THREE.Vector3(...o) : o[0] === 'i' ? toT.clone().multiplyScalar(+o.slice(2) / 100).add(new THREE.Vector3(0, 1.5, 0)) : o[0] === 'n' ? toT.clone().multiplyScalar(+o.slice(1) / 100).add(new THREE.Vector3(0, 0.5, 0)) : side.clone().multiplyScalar((o[0] === 'L' ? 1 : -1) * +o.slice(1));
+        if (o[0] === 'n' && toT.length() * (1 - +o.slice(1) / 100) < 3.5) continue; // the replay chase lens has a 2.8 u near plane
+        const n = leadClear(w, true); if (n > best) { best = n; pick = w; } if (n === HZ.length * 3) break; }
+      if (pick && best > 0) T41G.offT.copy(pick); }
+    else T41G.hid = 0;
+    T41G.off.lerp(T41G.offT, cut ? 1 : 1 - Math.exp(-dt * 20)); if (T41G.off.lengthSq() > 0.01) { c.add(T41G.off); aim = tp; T41G.n.crane++; }
   }
   const fixDeck = (p) => { const pr = project(p, 0, true); /* wide search: on a helix the pass overhead is ~70 samples away */ if (Math.abs(pr.lat) < HW[pr.i] + 0.9) { if (p.y > pr.cy - 0.4 && p.y < pr.cy + 0.9) { p.y = pr.cy + 0.9; return 1; } if (p.y >= pr.cy - 2.4 && p.y <= pr.cy - 0.4) { p.y = pr.cy - 2.4; return 1; } } return 0; }; // above a deck: lift clear; just under one (a helix pass overhead): drop clear, never through it
   const fixClip = (p, q) => { const fw = new THREE.Vector3(0, 0, -1).applyQuaternion(q), up = new THREE.Vector3(0, 1, 0).applyQuaternion(q), rt = fw.clone().cross(up), tf = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)); let n = 0;
@@ -2701,14 +2772,14 @@ function t41Guard(dt) {
     const dirs = t41Dirs.concat([[0, 0], [-1, -1], [1, -1], [-1, 1], [1, 1]].map(([x, y]) => fw.clone().addScaledVector(rt, x * tf * camera.aspect).addScaledVector(up, y * tf).normalize()));
     for (let it = 0; it < 2; it++) for (const d of dirs) { t41Ray.set(p, d); t41Ray.near = 0; t41Ray.far = 0.95; const hh = t41Ray.intersectObjects(near, false)[0]; if (hh) { p.addScaledVector(d, -(0.95 - hh.distance)); n++; } } return n; };
   // (1)+(2) the target: never in/under a deck, nothing within 0.95 u of the lens
-  T41G.n.deck += fixDeck(c); if (aim) camera.lookAt(aim); T41G.n.clip += fixClip(c, camera.quaternion); T41G.n.deck += fixDeck(c);
+  T41G.n.deck += fixDeck(c); if (aim) { const q0 = camera.quaternion.clone(); camera.lookAt(aim); camera.quaternion.copy(q0.slerp(camera.quaternion, Math.min(1, T41G.off.length() / 1.5))); } /* Claude T-044: the re-aim blends in with the offset */ T41G.n.clip += fixClip(c, camera.quaternion); T41G.n.deck += fixDeck(c);
   // (4) the corrections above glide in (<= 25 u/s) instead of popping, and a whip (> 600 deg/s) is eased. Cuts snap.
   const D = T41G.dirP, St = c.clone().sub(D);
-  if (cut || !T41G.R) { T41G.S.copy(St); T41G.Q = camera.quaternion.clone(); T41G.R = true; }
-  else {
-    const d = St.clone().sub(T41G.S), step = 25 * h; if (d.length() > step) { d.setLength(step); T41G.n.smooth++; } T41G.S.add(d);
+  if (cut || !T41G.R) { T41G.S.copy(St); T41G.Q = camera.quaternion.clone(); T41G.R = true; T41G.Sf = null; }
+  else { T41G.Sf = T41G.S.clone(); // Claude T-044 (part 2): where the lens was last frame (glide + nudge together stay under a skip)
+    const d = St.clone().sub(T41G.S); let step = (view.mode === 'replay' ? 45 : 25) * h; /* Claude T-044: replay corrections settle faster (slow-motion shots) */ if (d.length() > step && subK >= 0 && marbles[subK] && T41G.sph && !t44Seen(D.clone().add(T41G.S).add(d.clone().setLength(step)), marbles[subK].mesh.position)) { step = 80 * h; T41G.n.fast = (T41G.n.fast || 0) + 1; } /* Claude T-044: a glide that would hide the marble goes faster (still a smooth move, not a skip) */ if (d.length() > step) { d.setLength(step); T41G.n.smooth++; } T41G.S.add(d);
     c.copy(D).add(T41G.S); let nf = 0; for (let it = 0; it < 2; it++) nf += fixClip(c, camera.quaternion) + fixDeck(c); if (nf) T41G.S.copy(c.clone().sub(D)); // the deck rule has the last word
-    const ang = view.mode === 'live' ? 2 * Math.acos(Math.min(1, Math.abs(T41G.Q.dot(camera.quaternion)))) * 57.3 : 0, amax = 600 * h; // live only: replay orbits are planned moves
+    const ang = view.mode === 'live' || (view.mode === 'replay' && T41G.off.lengthSq() > 0.01) ? 2 * Math.acos(Math.min(1, Math.abs(T41G.Q.dot(camera.quaternion)))) * 57.3 : 0, amax = (view.mode === 'live' && camMode >= 2 ? 360 : 600) * h; /* Claude T-044 (part 2): Chase / Front re-aims eased harder (whips at the finish gantry) */ // live; replay only while the safety crane is re-aiming (Claude T-044: its re-aim made whips)
     if (ang > amax) { const qd = camera.quaternion.clone(); camera.quaternion.copy(T41G.Q.clone().slerp(qd, amax / ang)); T41G.n.smooth++;
       const sk = subK >= 0 ? subK : view.mode === 'live' && camMode >= 2 ? (follow >= 0 ? follow : standings()[0].k) : -1; // never ease the marble out of the picture
       if (sk >= 0) { camera.updateMatrixWorld(true); const sp = marbles[sk].mesh.position.clone().project(camera); if (Math.abs(sp.x) > 0.8 || Math.abs(sp.y) > 0.8 || sp.z > 1) camera.quaternion.copy(qd); } }
@@ -2718,6 +2789,14 @@ function t41Guard(dt) {
           for (const f of [0.2, 0.4, 0.6, 0.8, 1]) { camera.quaternion.copy(q0).slerp(q1, f); camera.updateMatrixWorld(true); const p2 = mp.clone().project(camera); if (Math.abs(p2.x) <= 0.72 && Math.abs(p2.y) <= 0.72 && p2.z <= 1) break; } T41G.n.pan = (T41G.n.pan || 0) + 1; } } }
     T41G.Q = camera.quaternion.clone();
   }
+  // (4b) Claude T-044: the last word. If the lens the player will see still has something solid in front of the marble, nudge it
+  // (at most 0.7 u, so with the glide it stays under a camera skip) to the first nearby spot that sees the marble and is clear of decks and of the lens rule.
+  if (subK >= 0 && marbles[subK] && !(seg && seg.cam === 'photo') && T41G.sph) { const mp = marbles[subK].mesh.position;
+    if (!t44Seen(c, mp)) { const toT = mp.clone().sub(c), side = new THREE.Vector3(-toT.z, 0, toT.x).normalize(), up = new THREE.Vector3(0, 1, 0); let ok = false;
+      for (const [a, b] of [[0, 0.35], [0.35, 0], [-0.35, 0], [0, 0.7], [0.5, 0.3], [-0.5, 0.3], [0.7, 0], [-0.7, 0], [0.5, 0.5], [-0.5, 0.5], [0, -0.4], [0.5, -0.45], [-0.5, -0.45], [0, 1.0], [0.8, 0.6], [-0.8, 0.6], [1.0, 0], [-1.0, 0], [0, 1.2]]) { /* Claude T-044 (part 2): out to 1.2 u (a skip is 1.5 u off the path) */
+        const q = c.clone().addScaledVector(side, a).addScaledVector(up, b); if ((T41G.Sf && q.clone().sub(D).distanceTo(T41G.Sf) > 1.4) || !t44Seen(q, mp) || fixDeck(q.clone()) || fixClip(q.clone(), camera.quaternion)) continue;
+        c.copy(q); T41G.S.copy(c.clone().sub(D)); T41G.n.nudge = (T41G.n.nudge || 0) + 1; ok = true; break; }
+      if (!ok) T41G.n.unseen = (T41G.n.unseen || 0) + 1; } }
   // (5) Claude T-042: a replay shot has to show who is winning. If the subject marble would be under 8% of the frame height (live TV: 6%),
   // the lens zooms in on it (and centres it), eased; the camera itself does not move, so what it can see does not change.
   T41G.dirF = camera.fov;
