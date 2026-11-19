@@ -119,7 +119,7 @@ const lavaEmit = texLoader.load('./marbles/lava_emit.jpg'); lavaEmit.colorSpace 
 await RAPIER.init();
 setBar(0.1, 'Loading Osaka…');
 const gltf = await new Promise((res, rej) => new GLTFLoader().load('./osaka_world.glb', res, (e) => e.total && setBar(0.1 + 0.8 * e.loaded / e.total), rej));
-setBar(0.92, 'Building the track…');
+setBar(0.92, 'Building the track…'); const T43L = { glb: performance.now() }; // Claude T-043: load step times ([load] in the console)
 const world3d = gltf.scene;
 scene.add(world3d);
 world3d.updateMatrixWorld(true);
@@ -786,6 +786,7 @@ for (const [ri, type, side0, off0, h0, bonus] of SPOTS) {
 // ---------- v3 floor readability (critique #10): thin edge lines + dashed lane lines, inside the locked palette ----------
 // Lines are a darker tone of the same gray-lavender deck (no new hues), so dark marbles read against a ruled surface.
 const floorMeshes = []; node('TRACK_floor')?.traverse((o) => o.isMesh && floorMeshes.push(o));
+{ const seen = new Set(); for (const o of floorMeshes) { const g = o.geometry; if (!g?.attributes.position) continue; if (!seen.has(g)) { seen.add(g); if (!g.boundsTree) try { g.boundsTree = new MeshBVH(g, { indirect: true }); } catch (e) { } } if (g.boundsTree) o.raycast = acceleratedRaycast; } } // Claude T-043: BVH on the deck before the ~110k start-up deckY rays (lane lines, smooth floor, lift); brute force took ~70 s to load
 const fray = new THREE.Raycaster();
 const deckY = (p) => { fray.set(new THREE.Vector3(p.x, p.y + 1.6, p.z), new THREE.Vector3(0, -1, 0)); fray.far = 3.4; const h = fray.intersectObjects(floorMeshes, false)[0]; return h ? h.point.y : null; };
 function ribbon(offs, w, color, opacity, dashed, sFrom = 0, sTo = L, tex = null) {
@@ -1279,7 +1280,8 @@ setBar(1, 'Ready');
   if (!PXQ && ms > +(Q.get('benchms') || 13) && renderer.getPixelRatio() > 1) { pixelCap = 1; renderer.setPixelRatio(1); }
   window.__pxTop = renderer.getPixelRatio(); window.__gpuBench = { ms: +ms.toFixed(1), px: renderer.getPixelRatio() }; console.log('[gpu check]', ms.toFixed(1), 'ms a frame ->', renderer.getPixelRatio() + 'x');
 }
-buildPicker(); showScreen('home');
+T43L.built = performance.now();
+buildPicker(); showScreen('home'); T43L.home = performance.now(); window.__loadMs = { glb: Math.round(T43L.glb), track: Math.round(T43L.built - T43L.glb), home: Math.round(T43L.home) }; console.log('[load] world file', T43L.glb.toFixed(0), 'ms, track + warm-up', (T43L.built - T43L.glb).toFixed(0), 'ms, home screen at', T43L.home.toFixed(0), 'ms'); // Claude T-043
 
 // test hooks
 window.__dh = {
