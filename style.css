@@ -107,9 +107,9 @@ button{font:inherit;color:#fff;border:0;border-radius:14px;cursor:pointer}
 #winTitle{position:absolute;top:14%;width:100%;text-align:center;font-size:clamp(30px,10vw,62px);font-weight:900;text-shadow:0 0 24px #ffb300,3px 3px 0 #b0001e;animation:wpulse .6s ease-in-out infinite alternate}
 @keyframes wpulse{from{transform:scale(1)}to{transform:scale(1.08)}}
 #winTitle small{display:block;font-size:18px;letter-spacing:3px;color:#ffb300}
-#wipe{position:fixed;inset:0;z-index:8;pointer-events:none;background:linear-gradient(100deg,transparent 0 30%,#e0102f 30% 70%,transparent 70%);transform:translateX(-140%);display:flex;align-items:center;justify-content:center}
+#wipe{position:fixed;inset:0;z-index:8;pointer-events:none;background:linear-gradient(115deg,transparent 0 33%,#e0102f 34% 66%,transparent 67%);transform:translateX(-140%);display:flex;align-items:center;justify-content:center}
 #wipe span{font-weight:900;font-style:italic;font-size:clamp(28px,9vw,60px);text-shadow:3px 3px 0 #7a0016}
-#wipe.go{animation:wipe .55s ease-in-out}
+#wipe.go{animation:wipe .35s ease-in-out} /* Claude T-042 (AD 8:25 PM): lighter wipe, 0.35 s, band under 60% of the frame */
 @keyframes wipe{from{transform:translateX(-140%)}to{transform:translateX(140%)}}
 #flash{position:fixed;inset:0;z-index:9;background:#fff;opacity:0;pointer-events:none;transition:opacity .5s}
 #flash.on{opacity:.9;transition:none}

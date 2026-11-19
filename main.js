@@ -86,8 +86,9 @@ let editP = 0;
 // ---------- renderer / scene ----------
 const isMobile = matchMedia('(pointer:coarse)').matches || /Android|iPhone|iPad/i.test(navigator.userAgent);
 let pixelCap = isMobile ? 1.5 : 2;
-const renderer = new THREE.WebGLRenderer({ antialias: !isMobile || devicePixelRatio < 2, powerPreference: 'high-performance', preserveDrawingBuffer: !!Q.get('shots') });
-renderer.setPixelRatio(Math.min(devicePixelRatio, pixelCap));
+const renderer = new THREE.WebGLRenderer({ antialias: Q.get('aa') != null ? Q.get('aa') !== '0' : devicePixelRatio < 1.25, /* Claude T-042: MSAA only on 1x screens. On Jarod's 1.25x laptop screen it halved the frame rate (lift shot 28 -> 48 fps without it); dense screens hide the jaggies. ?aa=0/1 test knob */ powerPreference: 'high-performance', preserveDrawingBuffer: !!Q.get('shots') });
+const PXQ = +Q.get('px') || 0; if (PXQ) pixelCap = PXQ; // Claude T-042 test knob: ?px=1.25 fixes the sharpness (no auto drop)
+renderer.setPixelRatio(PXQ || Math.min(devicePixelRatio, pixelCap));
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -680,8 +681,7 @@ function physicsStep() {
       if (race.finishOrder.length === 1) { race.phase = 'done'; race.endAt = race.t + Math.max(14, Math.min(30, 0.4 * race.t / LAPS)); onWinner(m); }
     }
   }
-  simT += DT; if (liftMech) liftMech.step(simT);
-  world.step();
+  simT += DT; { const _a = performance.now(); if (liftMech) liftMech.step(simT); const _b = performance.now(); world.step(); const _c = performance.now(); if (typeof PF !== 'undefined') { PF.liftJS = (PF.liftJS || 0) + _b - _a; PF.wasm = (PF.wasm || 0) + _c - _b; } } // Claude T-042: split of the physics cost
   if (racing || race.phase === 'grid') { if (rec.step++ % REC_EVERY === 0) { if (rec.n === 0) rec.t0 = race.t; if (race.phase !== 'grid') rec.push(); else rec.t0 = race.t; } }
   if (race.phase === 'done' && (race.finishOrder.length === NM || race.t > race.endAt)) endRace();
 }
@@ -862,9 +862,12 @@ if (LIFT && floorMeshes.length) liftMech = (() => {
   for (let k = 0; k < nP; k++) {
     const body = world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased());
     const col = world.createCollider(RAPIER.ColliderDesc.cuboid(half.x, half.y, half.z).setFriction(0.3).setRestitution(0.05), body);
-    const g = new THREE.Group(); const box = new THREE.Mesh(padGeo, blackM); const cap = new THREE.Mesh(capGeo, redM); cap.position.y = half.y; g.add(box, cap); scene.add(g);
-    g.userData.ptMover = true; pads.push({ body, g, col, ghost: false, o: { pos: new THREE.Vector3(), q: new THREE.Quaternion() } });
+    pads.push({ body, col, ghost: false, o: { pos: new THREE.Vector3(), q: new THREE.Quaternion() } });
   }
+  // Claude T-042: paddles drawn as 2 instanced meshes (was 154 draw calls on every lift shot)
+  const padIM = new THREE.InstancedMesh(padGeo, blackM, nP), capIM = new THREE.InstancedMesh(capGeo, redM, nP);
+  for (const im of [padIM, capIM]) { im.frustumCulled = false; im.userData.ptMover = true; im.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(im); }
+  const _pm = new THREE.Matrix4(), _cm = new THREE.Matrix4(), _cOff = new THREE.Matrix4().makeTranslation(0, half.y, 0), _one = new THREE.Vector3(1, 1, 1);
   // housing: dark side cheeks along the ramp + drums at both ends + under-belt band (visual only; rails stay the colliders)
   const cheekPts = [], liftHousing = []; for (let u = uA; u <= uB; u += 1) cheekPts.push(at(u));
   for (const side of [-1, 1]) for (let k = 0; k < cheekPts.length - 1; k++) {
@@ -883,11 +886,12 @@ if (LIFT && floorMeshes.length) liftMech = (() => {
     step(t) {
       if (race.phase === 'race' || race.phase === 'done') off = t - race.t;
       for (let k = 0; k < nP; k++) { const o = pose((((t * PHYS.liftV + k * PHYS.pitch) % loop) + loop) % loop, pads[k].o); pads[k].body.setNextKinematicTranslation(o.pos); pads[k].body.setNextKinematicRotation(o.q);
-        if (pads[k].ghost !== o.ghost) { pads[k].col.setSensor(o.ghost); pads[k].ghost = o.ghost; } } // Claude T-031: after the toss the sinking paddle is a ghost, so it can't pinch a marble against the crest deck (200-300 u/s kicks)
+        if (pads[k].ghost !== o.ghost) { pads[k].col.setEnabled(!o.ghost) /* Claude T-042: a ghost paddle leaves the physics world (was a sensor: same no-contact, but still in the broadphase) */; pads[k].ghost = o.ghost; } } // Claude T-031: after the toss the sinking paddle is a ghost, so it can't pinch a marble against the crest deck (200-300 u/s kicks)
     },
     draw(t) {
       const tt = view.mode === 'replay' ? t + off : t;
-      for (let k = 0; k < nP; k++) { const o = pose((((tt * PHYS.liftV + k * PHYS.pitch) % loop) + loop) % loop, pads[k].o); pads[k].g.position.copy(o.pos); pads[k].g.quaternion.copy(o.q); }
+      for (let k = 0; k < nP; k++) { const o = pose((((tt * PHYS.liftV + k * PHYS.pitch) % loop) + loop) % loop, pads[k].o); _pm.compose(o.pos, o.q, _one); padIM.setMatrixAt(k, _pm); capIM.setMatrixAt(k, _cm.multiplyMatrices(_pm, _cOff)); }
+      padIM.instanceMatrix.needsUpdate = true; capIM.instanceMatrix.needsUpdate = true;
       for (const d of drums) d.rotateY(0); // drums read as static rollers; belt motion carries the mechanical read
     },
   };
@@ -1205,13 +1209,17 @@ $('pickBtn').onclick = () => { race.phase = 'idle'; buildPicker(); showScreen('h
 
 // ---------- main loop ----------
 resetRace(); race.phase = 'idle';
-let acc = 0, last = performance.now(), frames = 0, fpsT = 0, fps = 60, lowStreak = 0, lastDrama = 0;
+let acc = 0, last = performance.now(), frames = 0, fpsT = 0, fps = 60, lowStreak = 0, hiStreak = 0, lastDrama = 0;
 let clankT = 0;
+var PF = { n: 0, steps: 0 }; let _pf = 0; const pfm = (k) => { const t = performance.now(); PF[k] = (PF[k] || 0) + t - _pf; _pf = t; }; // Claude T-042: per-section frame cost (window.__dh.perf())
 function frame(now) {
+  _pf = performance.now(); PF.n++;
   const dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); last = now; // Claude T-032c: never negative (a backwards jump parked the race clock at GO)
   acc += dt * PHYS.ts; let n = 0;
+  if (view.mode !== 'live' && race.phase === 'over') acc = 0; // Claude T-042: replay / podium are recorded, the bodies can rest
   while (acc >= DT && n < 60) { physicsStep(); acc -= DT; n++; }
   if (n === 60) acc = 0;
+  PF.steps += n; pfm('physics');
   if (view.mode === 'replay') {
     const s = view.segs[view.si];
     if (s) {
@@ -1229,43 +1237,55 @@ function frame(now) {
     else { const a = now * 0.00004; updateBlimp(dt, now, center.clone().add(new THREE.Vector3(Math.cos(a) * trackRad * 0.6, 0, Math.sin(a) * trackRad * 0.6)), new THREE.Vector3(-Math.sin(a), 0, Math.cos(a))); BL.focus.lerp(center, 0.02); }
   } else if (view.mode === 'replay') { BL.pos.copy(blimp ? blimp.position : BL.pos); const f = packFocus(); BL.focus.lerp(f, 1 - Math.exp(-dt * 2)); }
   for (const t of tags) { const m = marbles[t.p.k]; t.sp.position.copy(m.mesh.position).y += 1.15; t.sp.visible = race.phase !== 'idle' && m.mesh.visible && view.mode !== 'podium' || (view.mode === 'podium' && m.mesh.visible); }
-  updateParticles(dt);
+  pfm('sync'); updateParticles(dt);
   if (liftMech) liftMech.draw(view.mode === 'replay' ? view.rt * 1 : simT);
   if (view.mode === 'live' && (race.phase === 'race' || race.phase === 'done')) { // chain clank: louder with more marbles on the lift and when the camera is near it
     clankT -= dt; const onLift = marbles.filter((m) => m.onLift).length;
     if (onLift && clankT <= 0) { clankT = PHYS.pitch / PHYS.liftV; const near = marbles.some((m) => m.onLift && m.mesh.position.distanceTo(camera.position) < 40); sfx.clank((near ? 0.09 : 0.03) * Math.min(1, 0.4 + onLift * 0.15)); }
   }
-  if (race.phase === 'idle' && view.mode === 'live') { detachCam(); const a = now * 0.00008; camera.position.set(center.x + Math.cos(a) * trackRad * 1.3, center.y + 36, center.z + Math.sin(a) * trackRad * 1.3); camera.up.set(0, 1, 0); camera.lookAt(center); }
+  pfm('fx'); if (race.phase === 'idle' && view.mode === 'live') { detachCam(); const a = now * 0.00008; camera.position.set(center.x + Math.cos(a) * trackRad * 1.3, center.y + 36, center.z + Math.sin(a) * trackRad * 1.3); camera.up.set(0, 1, 0); camera.lookAt(center); }
   else if (view.mode === 'live') liveCamera(dt, now);
   else if (view.mode === 'replay') replayCamera(dt, now);
   else if (view.mode === 'podium') podiumFrame(dt, now);
-  if (T41G && T41G.on) t41Guard(dt); // Claude T-041: camera safety pass on the final camera (directors never see the change)
-  if (view.mode === 'live' && race.phase !== 'idle') {
+  pfm('cams'); if (T41G && T41G.on) t41Guard(dt); // Claude T-041: camera safety pass on the final camera (directors never see the change)
+  pfm('guard'); if (view.mode === 'live' && race.phase !== 'idle') {
     if (race.phase === 'race' || race.phase === 'done') $('clock').textContent = fmt(race.t);
     if (now - lastDrama > 250) { dramaTick(); renderBoard(); lastDrama = now; }
   }
   if (window.__free) { detachCam(); const f = window.__free; camera.position.set(...f.pos); camera.up.set(0, 1, 0); camera.lookAt(new THREE.Vector3(...f.look)); if (camera.fov !== f.fov) { camera.fov = f.fov; camera.updateProjectionMatrix(); } }
   if (window.__camLog) { const w = camera.getWorldPosition(new THREE.Vector3()), d = camera.getWorldDirection(new THREE.Vector3()); window.__camLog.push([+(now / 1000).toFixed(3), w.x, w.y, w.z, d.x, d.y, d.z, camera.fov]); }
-  adSumoTick(); // AD T-030b: mini rikishi stay upright
+  pfm('hud'); adSumoTick(); // AD T-030b: mini rikishi stay upright
   sfx.update(dt, camera, marbles, view.mode); // AD T-027: roll loop, clicks, rail hits, fling whoosh, listener = camera
   adTown.setCamera(camera); adTown.update(dt, now / 1000); // AD critic pass 1
-  renderer.render(scene, camera);
+  pfm('town'); renderer.render(scene, camera); pfm('render');
   if (T41G && T41G.on) t41Restore(); // Claude T-041: hand the directors back their own camera
   frames++; fpsT += dt;
   if (fpsT > 1) {
     fps = frames / fpsT; frames = 0; fpsT = 0; $('fps').textContent = `${Math.round(fps)} fps · ${renderer.getPixelRatio().toFixed(2)}x`;
-    if (fps < 45 && race.phase !== 'idle') { if (++lowStreak >= 2 && pixelCap > 0.75) { pixelCap = Math.max(0.75, renderer.getPixelRatio() - 0.25); renderer.setPixelRatio(pixelCap); lowStreak = 0; } } else lowStreak = 0;
+    if (!PXQ && fps < 52 && race.phase !== 'idle' && !(race.phase === 'grid' || (race.phase === 'race' && race.t < 3))) { /* Claude T-042: not on the grid / green light (shader warm-up) */ if (++lowStreak >= 2 && pixelCap > 0.75) { pixelCap = Math.max(0.75, renderer.getPixelRatio() - 0.25); renderer.setPixelRatio(pixelCap); lowStreak = 0; T42.pxAt = now; } hiStreak = 0; } else { lowStreak = 0; /* Claude T-042: a short dip (one heavy shot) no longer blurs the rest of the race: 5 s at 58+ fps and the sharpness steps back up, at most every 15 s */ if (!PXQ && fps >= 58 && window.__pxTop && renderer.getPixelRatio() < window.__pxTop) { if (++hiStreak >= 5 && now - (T42.pxAt || 0) > 15000) { pixelCap = Math.min(window.__pxTop, renderer.getPixelRatio() + 0.25); renderer.setPixelRatio(pixelCap); hiStreak = 0; T42.pxAt = now; } } else hiStreak = 0; }
   }
+  pfm('tail');
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
 setBar(1, 'Ready');
+{ const t0 = performance.now(), off = []; scene.traverse((o) => { if (o.isMesh && o.frustumCulled) { o.frustumCulled = false; off.push(o); } }); try { renderer.compile(scene, camera); renderer.render(scene, camera); } catch (e) { console.warn('[warm-up]', e.message); } for (const o of off) o.frustumCulled = true; console.log('[warm-up]', off.length, 'meshes', Math.round(performance.now() - t0), 'ms'); } // Claude T-042
+{ // Claude T-042: GPU check at load. Time a few full frames of the opening fly-over at full sharpness; a GPU that cannot hold ~60 fps there starts the race at 1.0x
+  const gl = renderer.getContext(), px = new Uint8Array(4), keepP = camera.position.clone(), keepQ = camera.quaternion.clone();
+  camera.position.set(center.x + trackRad * 1.3, center.y + 36, center.z); camera.lookAt(center); camera.updateMatrixWorld(true);
+  const one = () => { renderer.render(scene, camera); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); };
+  one(); const t0 = performance.now(); for (let i = 0; i < 4; i++) one(); const ms = (performance.now() - t0) / 4;
+  camera.position.copy(keepP); camera.quaternion.copy(keepQ);
+  if (!PXQ && ms > +(Q.get('benchms') || 13) && renderer.getPixelRatio() > 1) { pixelCap = 1; renderer.setPixelRatio(1); }
+  window.__pxTop = renderer.getPixelRatio(); window.__gpuBench = { ms: +ms.toFixed(1), px: renderer.getPixelRatio() }; console.log('[gpu check]', ms.toFixed(1), 'ms a frame ->', renderer.getPixelRatio() + 'x');
+}
 buildPicker(); showScreen('home');
 
 // test hooks
 window.__dh = {
   marbles, race, view, skin, FIELD, ROSTER, session, contract, stations, L, N, FIN, triCount, lm: () => liftMech, LIFTR: LIFT, // Claude T-041 debug
   start: () => { startRace(); },
+  perf: (reset = true) => { const o = { frames: PF.n, stepsPerFrame: +(PF.steps / Math.max(1, PF.n)).toFixed(1), calls: renderer.info.render.calls, tris: renderer.info.render.triangles, px: renderer.getPixelRatio() }; for (const k in PF) if (k !== 'n' && k !== 'steps') o[k] = +(PF[k] / Math.max(1, PF.n)).toFixed(2); if (reset) for (const k in PF) PF[k] = 0; return o; }, // Claude T-042
   go: () => { race.phase = 'race'; race.t = 0; $('lights').classList.add('hidden'); },
   steps: (n) => { for (let i = 0; i < n; i++) physicsStep(); },
   audio: () => ({ on: sfx.on, state: sfx.state, loaded: sfx.loaded }),
@@ -2018,6 +2038,11 @@ function tv6Resolve(p, tgt, off, head, i) { // relative offsets, first clean win
   return c[c.length - 1];
 }
 function tv6Spring(x, v, goal, W, dt) { const n = Math.max(1, Math.ceil(dt / 0.01)), h = dt / n; for (let k = 0; k < n; k++) { const a = goal.clone().sub(x).multiplyScalar(W * W).addScaledVector(v, -2 * W); v.addScaledVector(a, h); x.addScaledVector(v, h); } }
+const T42 = { v: new THREE.Vector3() }; // Claude T-042 state
+function t42NearGantry(q, r) { // the start/finish gantry, its poles and pennant lines (winner cam orbits right by them)
+  if (!T42.gBoxes) { T42.gBoxes = []; scene.traverse((o) => { if (o.isMesh && /^FX_(start_finish_gantry|gantry_sign|pennants_gantry|pole_gantry)/.test(o.name || o.parent?.name || '')) T42.gBoxes.push(new THREE.Box3().setFromObject(o)); }); }
+  for (const b of T42.gBoxes) if (b.distanceToPoint(q) < r) return true; return false;
+}
 function tv6Close(k, kind) { const _t0 = performance.now(); try { return tv6Close0(k, kind); } finally { TV6T.close += performance.now() - _t0; TV6T.n++; } }
 function tv6Close0(k, kind) { // Chase ('chase') and Front ('front'), live and replay
   const now = performance.now(), dt = THREE.MathUtils.clamp((now - (TV6.last || now - 16)) / 1000, 0.001, 0.1); TV6.last = now;
@@ -2042,6 +2067,10 @@ function tv6Close0(k, kind) { // Chase ('chase') and Front ('front'), live and r
   const nOff = inHx ? hxOff : chase ? head.clone().multiplyScalar(-16).add(new THREE.Vector3(0, 7, 0)) : head.clone().multiplyScalar(24).addScaledVector(NRM[i], 3).add(new THREE.Vector3(0, 10, 0));
   const lOff = NRM[i].clone().multiplyScalar(sd * (HW[i] + 6)).addScaledVector(th, chase ? -3 : 5).add(new THREE.Vector3(0, 6.5 + (TV6.liftUp || 0), 0));
   const goal = nOff.lerp(lOff, w);
+  if (!inHx && w < 0.5) { // Claude T-042 (chase and front): the start/finish banner sits at chase-lens height; when it is between the lens and the marble, ride low under it
+    if (T42.gantry === undefined) { const bx = new THREE.Box3(); scene.traverse((o) => { if (o.isMesh && /^FX_(start_finish_gantry|gantry_sign)/.test(o.name || o.parent?.name || '')) bx.union(new THREE.Box3().setFromObject(o)); }); T42.gantry = bx.isEmpty() ? null : bx.expandByVector(new THREE.Vector3(0.6, 0, 0.6)); } // the gantry and its signs
+    if (T42.gantry) { const q = p.clone().add(goal), lk = chase ? p.clone().addScaledVector(head, 9) : p.clone(), d = lk.clone().sub(q), dl = d.length(); const hit = new THREE.Ray(q, d.divideScalar(dl)).intersectBox(T42.gantry, T42.v), now2 = performance.now(); if (hit && hit.distanceTo(q) < dl) T42.duckT = now2; if (T42.duckT && now2 - T42.duckT < 600) { goal.x *= 0.65; goal.z *= 0.65; goal.y = Math.min(goal.y, 2.4); } } // stays low 0.6 s after the gantry is clear, so the decision never flickers (a flicker on a snap frame was a jump)
+  }
   const lead = TV6.vel.clone(); if (lead.length() > 60) lead.setLength(60);
   const lGoal = chase ? head.clone().multiplyScalar(9).addScaledVector(lead, 0.06).add(new THREE.Vector3(0, 0.2, 0)) : head.clone().multiplyScalar(2).addScaledVector(lead, 0.03).add(new THREE.Vector3(0, 0.3, 0));
   lGoal.lerp(th.clone().multiplyScalar(chase ? 3 : 1).addScaledVector(lead, 0.06).add(new THREE.Vector3(0, 0.3, 0)), w);
@@ -2359,9 +2388,9 @@ if (TV7.on) {
     const s = view.segs[view.si];
     if (s && s.cam === 'orbit') { const m = marbles[s.k], c = m.mesh.position.clone(), u = THREE.MathUtils.clamp((view.rt - s.t0) / (s.t1 - s.t0), 0, 1), a = u * 1.6 + 0.5; let p = null; // WINNER CAM: above the rails, not at deck level
       if (TV8.on) { const mk = (up) => c.clone().add(new THREE.Vector3(Math.cos(a) * (6 - u * 1.2), 5.4 - u * 0.6 + up, Math.sin(a) * (6 - u * 1.2))); // AD TV r8: steeper, rise until the rail is <= ~22 % of the frame
-        if (s.tv8t == null || Math.abs(view.rt - s.tv8t) > 0.2) { s.tv8t = view.rt; let pk = null; for (const up of [0, 1.5, 3, 4.5, 6]) { const q = mk(up); if (tv7DeckDist(q) < 1.6 || tv6Under(q) || tv6Inside(q)) continue; if (pk == null) pk = up; const fl = tv8Fill(q, tv7Up(c, 0.2), 38); if (fl.rail <= 0.22) { pk = up; break; } } if (pk != null) s.tv8upT = pk; }
+        if (s.tv8t == null || Math.abs(view.rt - s.tv8t) > 0.2) { s.tv8t = view.rt; let pk = null; for (const up of [0, 1.5, 3, 4.5, 6, 8, 10, 12]) { const q = mk(up); if (tv7DeckDist(q) < 1.6 || tv6Under(q) || tv6Inside(q) || t42NearGantry(q, 4)) continue; if (pk == null) pk = up; const fl = tv8Fill(q, tv7Up(c, 0.2), 38); if (fl.rail <= 0.22) { pk = up; break; } } if (pk != null) s.tv8upT = pk; }
         if (s.tv8upT != null) { s.tv8up = s.tv8up == null ? s.tv8upT : s.tv8up + (s.tv8upT - s.tv8up) * Math.min(1, dt * 3); p = mk(s.tv8up); } }
-      else for (const up of [0, 1.5, 3, 5]) { const q = c.clone().add(new THREE.Vector3(Math.cos(a) * (6.5 - u * 1.5), 4.2 - u * 0.8 + up, Math.sin(a) * (6.5 - u * 1.5))); if (tv7DeckDist(q) >= 1.6 && !tv6Under(q) && !tv6Inside(q)) { p = q; break; } }
+      else for (const up of [0, 1.5, 3, 5]) { const q = c.clone().add(new THREE.Vector3(Math.cos(a) * (6.5 - u * 1.5), 4.2 - u * 0.8 + up, Math.sin(a) * (6.5 - u * 1.5))); if (tv7DeckDist(q) >= 1.6 && !tv6Under(q) && !tv6Inside(q) && !t42NearGantry(q, 4)) { p = q; break; } }
       if (p) { setNear(0.2); shotName = 'REPLAY · WINNER CAM'; applyShot({ pos: p, look: tv7Up(c, 0.2), fov: 38, kPos: 99, kLook: 99, kFov: 3 }, dt); return; } }
     if (!s || s.cam !== 'tvreplay' || !s.tv7) return _replayCam(dt, now);
     const m = marbles[s.k]; let q;
@@ -2392,7 +2421,7 @@ if (TV7.on) {
     return { mode: 'crane' }; // elevated 3/4-rear follow, cleaned per frame
   }
   function tv7CranePose(s, m, dt) { const st = s.tv7, sp = project(m.mesh.position, m.vhint ?? 0, true).s, tg = tv7Up(m.mesh.position, 0.3); let want = null;
-    const hin = tv7InHx(sp, 0.5); if (hin) { const [dR, hh, phi] = TV7_HXC[0]; if (!st.hs || st.hs.hx !== hin) { st.hs = { hx: hin, R: hin.r + hin.hw + dR, h: hh, phi, k: s.k }; st.hst = { noLow: TV8.on }; camSnap = true; } const q = tv7HelixPose(st.hs, m, dt, st.hst); st.pos = q.pos.clone(); return q; }
+    const hin = tv7InHx(sp, 0.5); if (hin) { const [dR, hh, phi] = TV7_HXC[0]; if (!st.hs || st.hs.hx !== hin) { st.hs = { hx: hin, R: hin.r + hin.hw + dR, h: hh, phi, k: s.k }; st.hst = { noLow: TV8.on }; camSnap = true; T42.rc = (T42.rc || 0) + 1; } /* Claude T-042: a declared cut (into the spiral) */ const q = tv7HelixPose(st.hs, m, dt, st.hst); st.pos = q.pos.clone(); return q; }
     for (const [bk, D, H] of [[8, 5, 9], [10, 7, 11], [7, 3, 10], [12, 9, 13], [5, 2, 12]]) { for (const side of st.side ? [st.side, -st.side] : [1, -1]) { const f = tv5Frame(sp - bk), l = f.p.clone().addScaledVector(f.n, side * (f.hw + D)).addScaledVector(tv5Y, H); l.y = Math.max(l.y, m.mesh.position.y + H * 0.85) + (st.tv8lift || 0); if (tv7Clean(l, tg, 3.5)) { want = l; st.side = side; break; } } if (want) break; }
     if (!st.pos || camSnap) st.pos = (want || tv7Up(m.mesh.position, 12)).clone(); else if (want) st.pos.lerp(want, 1 - Math.exp(-dt * 2.5));
     const look = lookTarget(s.k, -1); return { pos: st.pos.clone(), look, fov: THREE.MathUtils.clamp(THREE.MathUtils.radToDeg(2 * Math.atan(4.5 / st.pos.distanceTo(look))), 24, 50) }; }
@@ -2604,7 +2633,7 @@ window.__pt = {
   blimp: () => blimp, gondola: () => gondolaMount,
   track: () => ({ P: P.map((p) => [p.x, p.y, p.z]), HW: HW.slice(), L }),
   state: () => ({ mode: view.mode, phase: race.phase, cam: CAMS[camMode], shot: typeof shotName === 'string' ? shotName : '', t: +race.t.toFixed(3), rt: +(view.rt || 0).toFixed(3), seg: view.si, segCam: view.mode === 'replay' ? (view.segs?.[view.si]?.cam || '') : '', onBlimp: camera.parent === gondolaMount, photo: document.body.classList.contains('photoMode'),
-    shotId: (t41CloseCam() ? 'h' + (TV6.cutN || 0) + ':' : '') + (camera.parent === gondolaMount ? 'b' + (AD4.planN || 0) + ':' : '') + (view.mode === 'live' && camMode === 0 ? (TV5.shot?.t0 ?? 0) : ''),
+    shotId: (t41CloseCam() ? 'h' + (TV6.cutN || 0) + ':' : '') + (camera.parent === gondolaMount ? 'b' + (AD4.planN || 0) + ':' : '') + (view.mode === 'live' && camMode === 0 ? (TV5.shot?.t0 ?? 0) : '') + (view.mode === 'replay' && T42.rc ? 'r' + T42.rc : ''),
     subj: view.mode === 'replay' ? (view.segs?.[view.si]?.k ?? -1) : view.mode !== 'live' || race.phase === 'idle' ? -1 : camMode === 0 ? (TV5.shot?.k ?? dir.shot?.k ?? -1) : (follow >= 0 ? follow : standings()[0].k) }),
   setCam: (k) => setCam(k), setFollow: (k) => { follow = k; },
   isOccluder: (o) => !o.userData.ptRail && !o.userData.t41,
@@ -2627,7 +2656,14 @@ function t41Guard(dt) {
     t41Ray.set(cw, d.divideScalar(L)); t41Ray.near = camera.near; t41Ray.far = L - 0.55; const hid = t41Ray.intersectObjects(t41Solid, false).length > 0; t41Ray.near = 0;
     if (hid) { T41G.bhid = (T41G.bhid || 0) + dt; if (T41G.bhid > 0.5 && performance.now() / 1000 - TV5.shot.t0 > 1.6) { TV5.shot.dur = Math.min(TV5.shot.dur, performance.now() / 1000 - TV5.shot.t0); T41G.bhid = 0; T41G.n.recut = (T41G.n.recut || 0) + 1; } } else T41G.bhid = 0;
   }
-  if (camera.parent !== scene && camera.parent !== null) { T41G.R = null; T41G.key = ''; return; } // blimp: the camera rides the gondola
+  if (camera.parent !== scene && camera.parent !== null) { T41G.R = null; T41G.key = ''; // blimp: the camera rides the gondola
+    const sg = view.mode === 'replay' ? view.segs?.[view.si] : null; // Claude T-042: replay blimp angles must show the leader too: zoom (and aim) the gondola lens
+    if (sg && sg.cam === 'blimp' && marbles[sg.k]) { T41G.dirP = camera.position.clone(); T41G.dirQ = camera.quaternion.clone(); T41G.dirF = camera.fov; T41G.saved = true;
+      const cw = camera.getWorldPosition(new THREE.Vector3()), tp = marbles[sg.k].mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0)), f0 = camera.fov, tgt = Math.max(8, Math.min(f0, THREE.MathUtils.radToDeg(2 * Math.atan(R / (cw.distanceTo(tp) * 0.08))))), bk = 'b' + view.si, h = Math.max(1 / 240, Math.min(0.1, dt));
+      camera.updateMatrixWorld(true); const cv = tp.clone().applyMatrix4(camera.matrixWorldInverse), keep = cv.z < -0.1 ? Math.max(Math.abs(cv.y), Math.abs(cv.x) / camera.aspect) / -cv.z / 0.7 : Infinity, fKeep = Math.min(f0, THREE.MathUtils.radToDeg(2 * Math.atan(keep))); // lens zoom only (no re-aim): the marble stays in the middle 70%
+      if (T42.bk !== bk || T42.bzf == null) T42.bzf = Math.max(tgt, fKeep); else T42.bzf += (Math.max(tgt, fKeep) - T42.bzf) * (1 - Math.exp(-h * 4)); T42.bzf = Math.max(T42.bzf, fKeep); T42.bk = bk;
+      if (T42.bzf < f0 - 0.05) { camera.fov = T42.bzf; camera.updateProjectionMatrix(); T41G.n.zoom = (T41G.n.zoom || 0) + 1; } }
+    return; }
   if (view.mode === 'live' && race.phase === 'idle') { T41G.R = null; return; }
   T41G.dirP = camera.position.clone(); T41G.dirQ = camera.quaternion.clone(); T41G.saved = true;
   if (!t41Solid) t41Solid = occluders.concat(trackOcc).filter((o) => !o.userData.ptMover);
@@ -2680,11 +2716,25 @@ function t41Guard(dt) {
           for (const f of [0.2, 0.4, 0.6, 0.8, 1]) { camera.quaternion.copy(q0).slerp(q1, f); camera.updateMatrixWorld(true); const p2 = mp.clone().project(camera); if (Math.abs(p2.x) <= 0.72 && Math.abs(p2.y) <= 0.72 && p2.z <= 1) break; } T41G.n.pan = (T41G.n.pan || 0) + 1; } } }
     T41G.Q = camera.quaternion.clone();
   }
+  // (5) Claude T-042: a replay shot has to show who is winning. If the subject marble would be under 8% of the frame height (live TV: 6%),
+  // the lens zooms in on it (and centres it), eased; the camera itself does not move, so what it can see does not change.
+  T41G.dirF = camera.fov;
+  const tvLive = view.mode === 'live' && camMode === 0 && race.phase !== 'grid' && TV5.shot && !/finish/.test(TV5.shot.type || ''); // live TV too: rail cams waited on a dot down the track
+  if (((view.mode === 'replay' && seg && seg.cam !== 'photo') || tvLive) && subK >= 0 && marbles[subK]) {
+    const tp = marbles[subK].mesh.position.clone().add(new THREE.Vector3(0, 0.3, 0)), dist = c.distanceTo(tp), f0 = camera.fov;
+    camera.updateMatrixWorld(true); const cv = tp.clone().applyMatrix4(camera.matrixWorldInverse); // lens zoom only, no re-aim (re-aiming made whips): never so tight that the marble leaves the middle 70% of the frame
+    const keep = cv.z < -0.1 ? Math.max(Math.abs(cv.y), Math.abs(cv.x) / camera.aspect) / -cv.z / 0.7 : Infinity, fKeep = THREE.MathUtils.radToDeg(2 * Math.atan(keep));
+    const tgt = Math.max(10, fKeep, Math.min(f0, THREE.MathUtils.radToDeg(2 * Math.atan(R / (dist * (tvLive ? 0.06 : 0.08))))));
+    if (cut || T42.zf == null) T42.zf = Math.min(f0, tgt); else T42.zf += (Math.min(f0, tgt) - T42.zf) * (1 - Math.exp(-h * 4));
+    T42.zf = Math.max(T42.zf, Math.min(f0, fKeep)); // widen at once if the marble heads for the edge
+    if (T42.zf < f0 - 0.05) { camera.fov = T42.zf; camera.updateProjectionMatrix(); T41G.n.zoom = (T41G.n.zoom || 0) + 1; }
+  } else T42.zf = null;
+  if (!(T42.zf != null && T42.zf < T41G.dirF - 0.05)) T42.aimOn = false;
   camera.updateMatrixWorld(true);
 }
-function t41Restore() { if (!T41G.saved) return; T41G.saved = false; T41G.rendP = camera.position.clone(); T41G.rendQ = camera.quaternion.clone(); camera.position.copy(T41G.dirP); camera.quaternion.copy(T41G.dirQ); camera.updateMatrixWorld(true); }
+function t41Restore() { if (!T41G.saved) { T41G.rendP = null; return; } T41G.saved = false; T41G.rendP = camera.position.clone(); T41G.rendQ = camera.quaternion.clone(); T41G.rendF = camera.fov; camera.position.copy(T41G.dirP); camera.quaternion.copy(T41G.dirQ); if (T41G.dirF != null && camera.fov !== T41G.dirF) { camera.fov = T41G.dirF; camera.updateProjectionMatrix(); } camera.updateMatrixWorld(true); }
 window.__pt.guard = () => ({ ...T41G.n });
-window.__pt.rendered = () => (T41G.rendP && camera.parent !== gondolaMount ? { p: T41G.rendP, q: T41G.rendQ } : null);
+window.__pt.rendered = () => (T41G.rendP ? { p: T41G.rendP, q: T41G.rendQ, f: T41G.rendF } : null);
 // helix centres (corkscrew, Sumo Spiral, Bay Spiral): mean of the samples over whole turns of the piece
 const T41HX = {};
 function t41HelixCentre(name) {
